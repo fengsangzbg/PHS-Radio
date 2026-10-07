@@ -11,7 +11,8 @@
 
 GlassTitleBar::GlassTitleBar(QMainWindow *owner, QWidget *parent)
     : QWidget(parent ? parent : owner), m_owner(owner), m_logo(new QLabel(this)),
-      m_title(new QLabel(this)), m_minimize(new JellyButton(QStringLiteral("−"), this)),
+      m_title(new QLabel(this)), m_update(new JellyButton(QStringLiteral("更新"), this)),
+      m_minimize(new JellyButton(QStringLiteral("−"), this)),
       m_maximize(new JellyButton({}, this)), m_close(new JellyButton({}, this)),
       m_accent(Aero::defaultAccent())
 {
@@ -30,6 +31,14 @@ GlassTitleBar::GlassTitleBar(QMainWindow *owner, QWidget *parent)
     m_title->setStyleSheet(QStringLiteral("color:#c9d8e8;font-size:12px;background:transparent;"));
     m_logo->setStyleSheet(QStringLiteral("background:transparent;"));
     layout->addWidget(m_logo); layout->addWidget(m_title, 1);
+    m_update->setObjectName(QStringLiteral("windowUpdate"));
+    m_update->setAccessibleName(QStringLiteral("检查软件更新"));
+    m_update->setToolTip(QStringLiteral("检查新版本，下载并更新软件"));
+    m_update->setFixedSize(68, 30);
+    layout->addWidget(m_update);
+    connect(m_update, &QPushButton::clicked, this, [this] {
+        if (onUpdateRequested) onUpdateRequested();
+    });
     m_minimize->setObjectName(QStringLiteral("windowMinimize"));
     m_maximize->setObjectName(QStringLiteral("windowMaximize"));
     m_close->setObjectName(QStringLiteral("windowClose"));
@@ -68,7 +77,7 @@ void GlassTitleBar::setAccentColor(const QColor &color)
 {
     if (!color.isValid()) return;
     m_accent = color;
-    for (JellyButton *button : {m_minimize, m_maximize, m_close}) button->setAccentColor(color);
+    for (JellyButton *button : {m_update, m_minimize, m_maximize, m_close}) button->setAccentColor(color);
     update();
 }
 

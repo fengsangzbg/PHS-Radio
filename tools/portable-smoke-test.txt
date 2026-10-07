@@ -24,6 +24,7 @@ Exit codes:
   3: media backend error.
   4: media playback did not advance before the timeout.
   5: temporary settings directory could not be created.
+  6: the executable does not contain its fixed update installer resource.
 
 Windows PowerShell waits reliably for this GUI executable using Start-Process:
   $packageExe = 'C:\path\PHSRadio.exe'

@@ -4,6 +4,7 @@
 #include <QPoint>
 #include <QPointer>
 #include <QWidget>
+#include <functional>
 
 class JellyButton;
 class QLabel;
@@ -15,6 +16,7 @@ class GlassTitleBar final : public QWidget {
 public:
     explicit GlassTitleBar(QMainWindow *owner, QWidget *parent = nullptr);
     void setAccentColor(const QColor &color);
+    std::function<void()> onUpdateRequested;
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -30,6 +32,7 @@ private:
     QPointer<QMainWindow> m_owner;
     QLabel *m_logo;
     QLabel *m_title;
+    JellyButton *m_update;
     JellyButton *m_minimize;
     JellyButton *m_maximize;
     JellyButton *m_close;

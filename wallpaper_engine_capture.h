@@ -36,7 +36,7 @@ private:
     void findWindow();
     void publishFrame();
     void fail(const QString &message);
-    void parkWindow();
+    bool parkWindow();
     bool muteWallpaper();
     QMediaCaptureSession *m_session = nullptr;
     QWindowCapture *m_capture = nullptr;
@@ -44,6 +44,7 @@ private:
     QProcess *m_command = nullptr;
     QTimer m_findTimer;
     QTimer m_frameTimer;
+    QTimer m_guardTimer;
     QTimer m_timeout;
     QString m_executable;
     QString m_windowName;

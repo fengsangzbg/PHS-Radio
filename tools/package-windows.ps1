@@ -12,8 +12,8 @@ param(
     [string] $ExePath = '',
     [ValidateSet('Release', 'RelWithDebInfo', 'MinSizeRel')]
     [string] $Configuration = 'Release',
-    [ValidatePattern('^[0-9A-Za-z][0-9A-Za-z._+-]*$')]
-    [string] $Version = '0.2.1',
+    [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')]
+    [string] $Version = '0.2.2',
     [switch] $ValidateOnly
 )
 
@@ -160,7 +160,10 @@ $serviceSource = Join-Path $workspaceRoot 'services\kugou'
 $releaseNotes = Join-Path $workspaceRoot 'release-notes.txt'
 $projectLicense = Join-Path $workspaceRoot 'LICENSE'
 $thirdPartyNotice = Join-Path $workspaceRoot 'THIRD_PARTY.md'
+$installerSource = Join-Path $workspaceRoot 'tools\update-install.ps1'
+$updaterResource = Join-Path $workspaceRoot 'resources\updater.qrc'
 foreach ($required in @($exeSource, $deployTool, $objdumpTool, $nodeSource, $releaseNotes, $projectLicense, $thirdPartyNotice,
+                        $installerSource, $updaterResource,
                         (Join-Path $serviceSource 'server.js'),
                         (Join-Path $serviceSource 'package.json'),
                         (Join-Path $serviceSource 'package-lock.json'))) {
@@ -362,6 +365,7 @@ $manifest = @(
     "Build configuration: $Configuration (Kugou only)",
     "Executable file version: $($exeVersion.FileVersion)",
     "Executable SHA-256: $((Get-FileHash -LiteralPath $packageExe -Algorithm SHA256).Hash)",
+    'Updater installer: embedded resource :/updater/update-install.ps1 (no separately downloaded helper).',
     "Production npm package entries: $packageCount",
     "Additional runtime DLL copies: $($copiedDlls.Count)",
     'System DLLs/API sets are supplied by Windows and were not copied.',

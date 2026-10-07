@@ -1,6 +1,6 @@
 # 开发与构建说明
 
-公开发行版 v0.2.1 只开放酷狗，使用 PHSRADIO_KUGOU_ONLY=ON 构建。关闭该选项会启用未开放平台的开发代码；这不代表发布版已支持这些平台。
+公开发行版 v0.2.2 只开放酷狗，使用 PHSRADIO_KUGOU_ONLY=ON 构建。关闭该选项会启用未开放平台的开发代码；这不代表发布版已支持这些平台。
 
 ## 模块
 
@@ -9,12 +9,17 @@
 - MusicSearch 管理文本、别名、简繁体与拼音索引；PlaybackQueue 管理顺序、随机与历史队列。
 - AeroWidgets 负责玻璃外观、Dock、滑出歌单、卡片、时钟、唱片及流星动画。
 - AeroSurface 按屏幕实际像素绘制背景并共享模糊纹理；WallpaperEngineCapture 只创建、捕获和关闭软件自己的动态壁纸窗口。
+- AppUpdater 从固定 GitHub 仓库读取正式版本、异步下载并核对 SHA256SUMS.txt 和附件摘要。程序内置的固定 PowerShell 安装器在检查通过后等待旧进程退出、备份替换文件、失败回滚并重启；不读取或修改账号设置。
 
 ## Windows 工具链
 
 发行构建使用 MSYS2 UCRT64、Qt 6.11.2、FFmpeg 9.0.2、ICU 78 和 Node.js 24.21.0；所需 DLL 由打包脚本检查并收集。
 
-使用同一工具链的 C++17 编译器、Qt 与 ICU，按 README 构建。运行 npm ci --prefix services/kugou --omit=dev --ignore-scripts 安装锁定依赖。测试使用本地模拟数据和静音媒体，不需要真实平台账号；目前共22项。
+使用同一工具链的 C++17 编译器、Qt 与 ICU，按 README 构建。运行 npm ci --prefix services/kugou --omit=dev --ignore-scripts 安装锁定依赖。测试使用本地模拟数据和静音媒体，不需要真实平台账号；更新下载测试使用离线网络模拟。
+
+MinGW 构建对新增 QObject 模块采用相对文件名调用 moc，避免该工具对中文绝对路径的编码错误。
+
+tools/test-portable-update.ps1 可在工作区创建两份便携包副本，验证中文空格路径的完整更新、校验失败、只读文件、失败回滚和用户文件保留。运行 -RunSmoke 还会检查更新后真实 EXE 的原生插件启动；不修改原始发布包和真实账号。
 
 PHSRADIO_APP_OUTPUT_DIR 可设置独立 EXE 输出目录，以免预览窗口锁住需要重新链接的文件。打包时可传 -ExePath 明确选择发布EXE，脚本拒绝旧版本和未启用酷狗门控的配置。
 

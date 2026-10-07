@@ -21,6 +21,8 @@
 #include "wallpaper_engine_capture.h"
 #include "glass_title_bar.h"
 #include "release_config.h"
+#include "update_panel.h"
+#include "app_updater.h"
 
 #include <QApplication>
 #include <QAudioOutput>
@@ -72,6 +74,7 @@
 #include <QImageReader>
 #include <QTemporaryDir>
 #include <QFileInfo>
+#include <QFile>
 #include <QtMath>
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -86,7 +89,7 @@
 #include <vector>
 
 #ifndef PHSRADIO_VERSION
-#define PHSRADIO_VERSION "0.1.2"
+#define PHSRADIO_VERSION "0.2.2"
 #endif
 
 namespace {
@@ -171,6 +174,8 @@ public:
         root->setContentsMargins(26, 16, 24, 26);
         root->setSpacing(16);
         m_titleBar = new GlassTitleBar(this, central);
+        m_titleBar->onUpdateRequested = [this] { showUpdatePanel(); };
+        m_loginTitleBar->onUpdateRequested = [this] { showUpdatePanel(); };
         root->addWidget(m_titleBar);
         m_toolbarPanel = new AeroPanel(central);
         auto *top = new QHBoxLayout(m_toolbarPanel);
@@ -858,6 +863,21 @@ protected:
 #endif
 
 private:
+    void showUpdatePanel()
+    {
+        m_dock->setInteractionHeld(true);
+        UpdatePanel panel(QString::fromUtf8(PHSRADIO_VERSION), m_accent, m_surface, this);
+        panel.onInstallerStarted = [this] {
+            m_player->stop();
+            m_wallpaperCapture->stop();
+            QSettings settings;
+            settings.sync();
+            QTimer::singleShot(0, qApp, &QCoreApplication::quit);
+        };
+        panel.exec();
+        m_dock->setInteractionHeld(false);
+    }
+
     void refreshDevicePixelRatioAssets()
     {
         const qreal dpr = m_surface->devicePixelRatioF();
@@ -2233,6 +2253,14 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationVersion(QString::fromUtf8(PHSRADIO_VERSION));
     Q_INIT_RESOURCE(app);
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/app/app.ico")));
+    std::unique_ptr<AppUpdater> smokeUpdater;
+    if (smokeMode) {
+        smokeUpdater = std::make_unique<AppUpdater>();
+        if (!QFile::exists(QStringLiteral(":/updater/update-install.ps1"))) {
+            qCritical("Bundled update installer resource is missing.");
+            return 6;
+        }
+    }
 
     QSettings settings;
     const QVector<MusicPlatform> selected = smokeMode ? QVector<MusicPlatform>{MusicPlatform::Kugou}

@@ -19,15 +19,18 @@
 - 导入图片、GIF、视频和 Wallpaper Engine 壁纸，自定义背景与配色，组合复古、明亮等风格。
 - 壁纸保持静音，音乐独立播放；窗口隐藏或不活跃时减少背景开销。
 - 跟随 Windows 默认音频设备切换，支持耳机与扬声器切换。
+- 标题栏“更新”检查新版本，下载校验后安装并自动重启，保留登录及主题设置。
 
 软件免费使用。音乐能否播放由酷狗返回的音源及账号权限决定，会员、付费、地区与下架限制仍适用。目前发布版只开放酷狗，网易云与 QQ 音乐留待后续接入。
 
 ## 安装与使用
 
-1. 到 [Releases](https://github.com/fengsangzbg/PHS-Radio/releases/latest) 下载 `PHS-Radio-0.2.1-windows-x64.zip`。
+1. 到 [Releases](https://github.com/fengsangzbg/PHS-Radio/releases/latest) 下载 `PHS-Radio-0.2.2-windows-x64.zip`。
 2. **完整解压**后双击 `PHSRadio.exe`。保留 DLL、Qt 插件、`runtime`、`services` 等全部文件；无需另装 Qt、Node.js 或 npm。
 3. 使用手机酷狗 App 扫描软件中的二维码，确认登录。
 4. 歌单会在后台逐步加载。未加载完整时可从歌单面板重试；双击歌曲即可播放。
+
+v0.2.1 首次升级需要下载新版完整包；从 v0.2.2 起，点击标题栏“更新”，有新版本时选择“下载并更新”。更新会正常退出播放器、替换应用文件并自动重启，保留账号和主题设置；下载或安装失败时保留或恢复旧版。请将便携包放在当前用户可写的文件夹。
 
 账号凭据使用当前 Windows 用户的 DPAPI 加密保存。发布包不包含开发者账号、登录信息或导入的私人壁纸。
 
@@ -47,7 +50,7 @@
 cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPHSRADIO_KUGOU_ONLY=ON
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.2
 ```
 
 本机服务源码与依赖锁位于 `services/kugou`，开发或重新打包前运行 `npm ci --prefix services/kugou --omit=dev --ignore-scripts`。服务只监听本机 `127.0.0.1:3737`。

@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/updater">
+        <file alias="update-install.ps1">../tools/update-install.ps1</file>
+    </qresource>
+</RCC>

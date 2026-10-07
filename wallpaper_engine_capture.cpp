@@ -10,6 +10,7 @@
 #include <QMediaCaptureSession>
 #include <QProcess>
 #include <QSaveFile>
+#include <QPoint>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QVideoSink>
@@ -23,6 +24,41 @@
 #endif
 
 namespace {
+QPoint rendererParkingPosition()
+{
+#ifdef Q_OS_WIN
+    // These are virtual-desktop coordinates, including monitors left of (0,0).
+    // WGC captures the window's own surface even when it is wholly offscreen.
+    return QPoint(GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN) + 256,
+                  GetSystemMetrics(SM_YVIRTUALSCREEN));
+#else
+    return QPoint(32767, 32767);
+#endif
+}
+
+#ifdef Q_OS_WIN
+QPoint rendererCapturePosition(quintptr owner)
+{
+    const HWND window = reinterpret_cast<HWND>(owner);
+    const HMONITOR monitor = window && IsWindow(window)
+        ? MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY)
+        : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO info{sizeof(MONITORINFO)};
+    if (GetMonitorInfoW(monitor, &info))
+        return QPoint(info.rcMonitor.left, info.rcMonitor.top);
+    return QPoint(0, 0);
+}
+
+bool isNamedRenderer(HWND window, const QString &name)
+{
+    if (!window || !IsWindow(window) || !name.startsWith(QStringLiteral("PHSRadioWallpaper_")))
+        return false;
+    wchar_t title[256]{};
+    GetWindowTextW(window, title, 256);
+    return QString::fromWCharArray(title) == name;
+}
+#endif
+
 void removeMutedProject(const QString &directory)
 {
     const QFileInfo info(directory);
@@ -110,6 +146,15 @@ bool controlNamedWallpaper(const QString &executable, const QString &windowName,
     // A missing location would target every wallpaper, so never issue such a command.
     if (executable.isEmpty() || !windowName.startsWith(QStringLiteral("PHSRadioWallpaper_")))
         return false;
+#ifdef Q_OS_WIN
+    if (!mute) {
+        const HWND window = FindWindowW(nullptr, reinterpret_cast<LPCWSTR>(windowName.utf16()));
+        if (isNamedRenderer(window, windowName)) {
+            ShowWindow(window, SW_HIDE);
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        }
+    }
+#endif
     QProcess command;
     command.setProgram(executable);
     command.setWorkingDirectory(QFileInfo(executable).absolutePath());
@@ -154,9 +199,14 @@ WallpaperEngineCapture::WallpaperEngineCapture(QObject *parent) : QObject(parent
     m_findTimer.setInterval(120);
     m_frameTimer.setInterval(16);
     m_frameTimer.setTimerType(Qt::PreciseTimer);
+    m_guardTimer.setInterval(250);
     m_timeout.setSingleShot(true);
     connect(&m_findTimer, &QTimer::timeout, this, [this] { findWindow(); });
     connect(&m_frameTimer, &QTimer::timeout, this, [this] { publishFrame(); });
+    connect(&m_guardTimer, &QTimer::timeout, this, [this] {
+        if (m_requested && !parkWindow())
+            fail(QStringLiteral("无法保持 Wallpaper Engine 专属渲染窗口不可见，已停止背景连接。"));
+    });
     connect(&m_timeout, &QTimer::timeout, this, [this] {
         fail(QStringLiteral("Wallpaper Engine 未输出动态画面，请先启动它，再重新连接背景。"));
     });
@@ -215,9 +265,11 @@ void WallpaperEngineCapture::start(const QString &executable, const QString &pro
     m_paused = false;
     m_command->setWorkingDirectory(binary.absolutePath());
     m_command->setProgram(m_executable);
+    const QPoint parking = rendererParkingPosition();
     m_command->setArguments({QStringLiteral("-control"), QStringLiteral("openWallpaper"),
         QStringLiteral("-file"), wrapper, QStringLiteral("-playInWindow"), m_windowName,
         QStringLiteral("-width"), QString::number(size.width()), QStringLiteral("-height"), QString::number(size.height()),
+        QStringLiteral("-x"), QString::number(parking.x()), QStringLiteral("-y"), QString::number(parking.y()),
         QStringLiteral("-borderless"), QStringLiteral("1"), QStringLiteral("-activate"), QStringLiteral("0")});
     if (!m_command->startDetached()) {
         fail(QStringLiteral("无法启动 Wallpaper Engine 控制命令，请检查安装路径。"));
@@ -246,6 +298,17 @@ void WallpaperEngineCapture::findWindow()
 {
     if (!m_requested)
         return;
+#ifdef Q_OS_WIN
+    // Launch offscreen, apply zero opacity before moving to a capture-capable
+    // monitor, then enumerate. An offscreen cold start does not produce frames.
+    const HWND renderer = FindWindowW(nullptr, reinterpret_cast<LPCWSTR>(m_windowName.utf16()));
+    if (!renderer)
+        return;
+    if (!parkWindow()) {
+        fail(QStringLiteral("无法隐藏 Wallpaper Engine 专属渲染窗口，已停止背景连接。"));
+        return;
+    }
+#endif
     for (const auto &window : QWindowCapture::capturableWindows()) {
         if (window.isValid() && window.description() == m_windowName) {
             m_findTimer.stop();
@@ -253,41 +316,83 @@ void WallpaperEngineCapture::findWindow()
                 fail(QStringLiteral("无法设置本软件专属 Wallpaper Engine 窗口的静音。"));
                 return;
             }
-            parkWindow();
             m_capture->setWindow(window);
             if (!m_paused)
                 m_capture->start();
             if (!m_paused)
                 m_frameTimer.start();
+            m_guardTimer.start();
+#ifdef Q_OS_WIN
+            if (m_paused)
+                ShowWindow(reinterpret_cast<HWND>(m_nativeWindow), SW_HIDE);
+#endif
             return;
         }
     }
 }
 
-void WallpaperEngineCapture::parkWindow()
+bool WallpaperEngineCapture::parkWindow()
 {
 #ifdef Q_OS_WIN
     const HWND handle = FindWindowW(nullptr, reinterpret_cast<LPCWSTR>(m_windowName.utf16()));
-    if (!handle)
-        return;
+    if (!isNamedRenderer(handle, m_windowName))
+        return false;
     m_nativeWindow = reinterpret_cast<quintptr>(handle);
     const auto exStyle = GetWindowLongPtrW(handle, GWL_EXSTYLE);
     // Tool windows are rejected by Qt's Windows capture backend ("No tooltips").
     // Ownership keeps the renderer out of Alt+Tab without that window style.
-    SetWindowLongPtrW(handle, GWL_EXSTYLE, (exStyle | WS_EX_NOACTIVATE) & ~(WS_EX_APPWINDOW | WS_EX_TOOLWINDOW));
+    const auto desiredStyle = (exStyle | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED)
+        & ~(WS_EX_APPWINDOW | WS_EX_TOOLWINDOW);
+    if (desiredStyle != exStyle) {
+        SetLastError(0);
+        if (!SetWindowLongPtrW(handle, GWL_EXSTYLE, desiredStyle) && GetLastError() != 0) {
+            ShowWindow(handle, SW_HIDE);
+            return false;
+        }
+    }
+    // WGC reads the original swap-chain image, independently of the desktop
+    // compositor's constant window opacity. Zero opacity is genuinely invisible
+    // and still yields opaque, full-resolution dynamic frames. Cloaking a WE
+    // window from this process is denied; hiding or cold-starting offscreen stops
+    // its frame production. Do not use either as the active rendering strategy.
+    COLORREF key{}; BYTE alpha{}; DWORD flags{};
+    if (!GetLayeredWindowAttributes(handle, &key, &alpha, &flags)
+        || alpha != 0 || !(flags & LWA_ALPHA)) {
+        if (!SetLayeredWindowAttributes(handle, 0, 0, LWA_ALPHA)) {
+            ShowWindow(handle, SW_HIDE);
+            return false;
+        }
+    }
     // An invisible helper owner keeps the renderer behind the player. Directly
     // owning it by the main window would force the wallpaper above that window.
     if (!m_hiddenOwner)
         m_hiddenOwner = reinterpret_cast<quintptr>(CreateWindowExW(WS_EX_TOOLWINDOW,
             L"STATIC", L"PHSRadioBackgroundOwner", WS_POPUP,
             0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr));
-    if (m_hiddenOwner)
-        SetWindowLongPtrW(handle, GWLP_HWNDPARENT, static_cast<LONG_PTR>(m_hiddenOwner));
-    // Keep the renderer visible for Graphics Capture, below application windows.
-    SetWindowPos(handle, HWND_BOTTOM, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (!m_hiddenOwner) {
+        ShowWindow(handle, SW_HIDE);
+        return false;
+    }
+    if (GetWindowLongPtrW(handle, GWLP_HWNDPARENT) != static_cast<LONG_PTR>(m_hiddenOwner)) {
+        SetLastError(0);
+        if (!SetWindowLongPtrW(handle, GWLP_HWNDPARENT, static_cast<LONG_PTR>(m_hiddenOwner)) && GetLastError() != 0) {
+            ShowWindow(handle, SW_HIDE);
+            return false;
+        }
+    }
+    const QPoint position = rendererCapturePosition(m_ownerWindow);
+    RECT geometry{};
+    GetWindowRect(handle, &geometry);
+    if (geometry.left != position.x() || geometry.top != position.y() || desiredStyle != exStyle) {
+        if (!SetWindowPos(handle, HWND_BOTTOM, position.x(), position.y(), 0, 0,
+                          SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
+            ShowWindow(handle, SW_HIDE);
+            return false;
+        }
+    }
     setRenderSize(m_renderSize);
 #endif
+    return true;
 }
 
 void WallpaperEngineCapture::publishFrame()
@@ -318,8 +423,26 @@ void WallpaperEngineCapture::setPaused(bool paused)
         return;
     }
     m_paused = paused;
-    if (m_requested && !m_findTimer.isActive())
-        m_capture->setActive(!paused);
+    if (m_requested && !m_findTimer.isActive()) {
+        if (paused)
+            m_capture->stop();
+#ifdef Q_OS_WIN
+        const HWND handle = reinterpret_cast<HWND>(m_nativeWindow);
+        if (isNamedRenderer(handle, m_windowName)) {
+            if (paused)
+                ShowWindow(handle, SW_HIDE);
+            else {
+                if (!parkWindow()) {
+                    fail(QStringLiteral("无法隐藏 Wallpaper Engine 专属渲染窗口，已停止背景连接。"));
+                    return;
+                }
+                ShowWindow(handle, SW_SHOWNOACTIVATE);
+            }
+        }
+#endif
+        if (!paused)
+            m_capture->start();
+    }
     if (paused) {
         m_frameTimer.stop();
         m_timeout.stop();
@@ -337,7 +460,7 @@ void WallpaperEngineCapture::setRenderSize(QSize pixels)
     m_renderSize = pixels.expandedTo(QSize(640, 360));
 #ifdef Q_OS_WIN
     const HWND handle = reinterpret_cast<HWND>(m_nativeWindow);
-    if (handle && IsWindow(handle)) {
+    if (isNamedRenderer(handle, m_windowName)) {
         RECT rect{};
         GetClientRect(handle, &rect);
         if (rect.right == m_renderSize.width() && rect.bottom == m_renderSize.height())
@@ -373,17 +496,16 @@ void WallpaperEngineCapture::stop()
     m_announced = false;
     m_findTimer.stop();
     m_frameTimer.stop();
+    m_guardTimer.stop();
     m_timeout.stop();
     m_capture->stop();
     m_latestFrame = {};
     m_hasFrame = false;
 #ifdef Q_OS_WIN
     const HWND handle = reinterpret_cast<HWND>(m_nativeWindow);
-    if (handle && IsWindow(handle)) {
-        wchar_t title[256] = {};
-        GetWindowTextW(handle, title, 256);
-        if (QString::fromWCharArray(title) == m_windowName)
-            PostMessageW(handle, WM_CLOSE, 0, 0);
+    if (isNamedRenderer(handle, m_windowName)) {
+        ShowWindow(handle, SW_HIDE);
+        PostMessageW(handle, WM_CLOSE, 0, 0);
     }
 #endif
     // Also closes a pop-out that was created just before cancellation and not

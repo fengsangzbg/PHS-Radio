@@ -42,6 +42,12 @@ int main(int argc, char **argv)
     auto *minimize = bar->findChild<QPushButton *>(QStringLiteral("windowMinimize"));
     auto *close = bar->findChild<QPushButton *>(QStringLiteral("windowClose"));
     check(maximize && minimize && close, "All three native window actions must remain available.");
+    auto *update = bar->findChild<QPushButton *>(QStringLiteral("windowUpdate"));
+    bool updateRequested = false;
+    bar->onUpdateRequested = [&] { updateRequested = true; };
+    check(update, "Software updates must be accessible from the title bar.");
+    update->click();
+    check(updateRequested && !owner.closeRequested, "The update button must dispatch the update action without closing the player.");
     maximize->click(); QCoreApplication::processEvents();
     check(owner.isMaximized() && maximize->accessibleName() == QStringLiteral("还原窗口"),
           "Maximizing must update both owner state and the restore action.");
