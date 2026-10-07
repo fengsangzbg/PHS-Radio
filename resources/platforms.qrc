@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/platforms">
+    <file alias="kugou.ico">platforms/kugou.ico</file>
+  </qresource>
+</RCC>

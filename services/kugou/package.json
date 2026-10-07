@@ -1,0 +1,12 @@
+{
+  "name": "phs-radio-kugou-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-only Kugou API bridge for PHS Radio",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "kugoumusicapi": "https://codeload.github.com/MakcRe/KuGouMusicApi/tar.gz/refs/tags/v1.6.0"
+  }
+}

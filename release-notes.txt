@@ -1,0 +1,29 @@
+PHS Radio新大地播放器
+版本：v0.2.1 / Windows 64 位 / 酷狗专用发布版
+
+实用且美观的 Frutiger Aero 播放器，支持免费收听酷狗平台提供的可播放音乐。
+目前只开放酷狗平台，网易云与 QQ 音乐将在后续接入。
+
+启动软件
+完整解压发布包，双击 PHSRadio.exe。请保留 DLL、Qt 插件、runtime、services 等全部文件；无需另装 Qt、Node.js 或 npm。
+
+酷狗与播放
+使用手机酷狗 App 扫描软件内的二维码并确认登录。账号歌单和歌曲会在后台逐步加载；未加载完整时可在左侧歌单面板重试。
+顶部搜索查询酷狗全平台曲库；歌单面板的搜索只筛选自己的歌单。双击歌曲播放，鼠标靠近底部展开 Dock，可固定、切歌、顺序或随机播放并拖动进度。
+支持首页每日推荐、跟随电脑时区的时钟、同步滚动歌词和带高清封面的旋转玻璃唱片。
+软件免费使用；音乐能否播放由酷狗返回的音源及账号权限决定，会员、付费、地区和下架限制仍然适用。
+
+Wallpaper Engine 与多种风格
+顶部“主题”可导入图片、GIF 或视频，自定义背景和遮暗程度；Dock 调色按钮可选择预设或自选颜色，搭配复古、明亮、水蓝、薄荷等多种风格。
+支持导入已安装的 Wallpaper Engine 壁纸。视频直接循环播放；场景、网页壁纸需要本机安装并运行 Wallpaper Engine，以软件专属窗口输出动态背景。原工程和桌面壁纸设置不修改；Wallpaper Engine 本体与壁纸作品不随软件分发。
+软件背景固定静音，音乐音量独立。窗口隐藏或失活时停止背景解码/抓帧；实际画质与帧率取决于源素材和电脑性能。
+
+耳机与账号
+播放器跟随 Windows 默认播放设备切换。3.5mm 插孔的自动切换同时取决于声卡驱动和 Windows 默认设备设置。
+账号凭据由当前 Windows 用户的 DPAPI 加密保存。发布包不包含开发者账号、登录数据、私人壁纸或音乐文件。
+
+开源与反馈
+项目采用 GPL-3.0；第三方库遵循各自许可。LICENSE、THIRD_PARTY.md 和 licenses 目录提供许可说明；同版本 Release 同时提供对应依赖源码与构建配方。
+项目：https://github.com/fengsangzbg/PHS-Radio
+下载：https://github.com/fengsangzbg/PHS-Radio/releases
+反馈：https://github.com/fengsangzbg/PHS-Radio/issues

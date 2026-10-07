@@ -1,0 +1,36 @@
+PHS Radio portable runtime verification
+
+Run these commands with a packaged PHSRadio.exe, from a different working
+directory. They use a temporary INI settings directory and an independent
+organization/application name. Existing accounts, selected wallpapers and
+user settings are not read. No account is restored or Node service started.
+The disabled smoke window renders the Kugou homepage with the default Liquid
+background, then exits automatically.
+
+UI/plugin smoke (normally finishes in 3 seconds):
+  PHSRadio.exe --smoke-test
+
+Real media-plugin smoke with a local WAV fixture:
+  PHSRadio.exe --smoke-media "C:\path\silent-fixture.wav"
+
+The media test creates its own player/audio output, sets both volume=0 and
+muted=true before attaching the source, and requires a positive duration and
+advancing playback position. It never accesses a platform API. Use a silent
+PCM WAV of at least one second. Media timeout is 10 seconds.
+
+Exit codes:
+  0: UI or real media verification passed.
+  2: missing WAV argument, missing file or non-WAV input.
+  3: media backend error.
+  4: media playback did not advance before the timeout.
+  5: temporary settings directory could not be created.
+
+Windows PowerShell waits reliably for this GUI executable using Start-Process:
+  $packageExe = 'C:\path\PHSRadio.exe'
+  $probe = Start-Process -FilePath $packageExe -ArgumentList '--smoke-test' -WorkingDirectory $env:TEMP -WindowStyle Hidden -PassThru -Wait
+  $probe.ExitCode
+
+For dependency isolation, temporarily set PATH to the Windows system paths in
+the invoking shell only, run the above command, then restore the original PATH.
+Do not remove or change any installed system DLLs. Normal startup without a
+smoke flag retains the existing account and appearance behavior.

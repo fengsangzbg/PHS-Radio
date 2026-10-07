@@ -1,0 +1,17 @@
+build/
+build-*/
+dist/
+.npm-cache/
+.release-tools/
+release-source/
+.vs/
+.vscode/ipch/
+services/kugou/node_modules/
+services/netease/node_modules/
+*.log
+*.dmp
+*.zip
+*.user
+.env
+.env.*
+!.env.example
