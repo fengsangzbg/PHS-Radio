@@ -19,6 +19,7 @@ class QVideoSink;
 class QProcess;
 class QThread;
 class QWidget;
+class NativeWindowCapture;
 
 // Uses a named Wallpaper Engine pop-out. Never opens or closes desktop wallpapers.
 class WallpaperEngineCapture final : public QObject {
@@ -38,6 +39,8 @@ public:
     bool isRunning() const;
     bool isRequested() const { return m_requested; }
     QString windowName() const { return m_windowName; }
+    QString statusText() const { return m_statusText; }
+    QString diagnosticReport() const;
     void setOwnerWindow(quintptr window) { m_ownerWindow = window; }
 
     std::function<void(const QImage &)> onFrame;
@@ -49,6 +52,9 @@ private:
     bool captureWindowReady();
     void resetCaptureCandidate();
     void handleCaptureError(int error, const QString &detail);
+    bool startNativeFallback();
+    void updateStatus(const QString &status);
+    QString buildDiagnosticReport(const QString &error = {}) const;
     void publishFrame();
     void startRgbConversion(const QVideoFrame &frame);
     void resetConvertedFrames();
@@ -58,6 +64,7 @@ private:
     bool muteWallpaper();
     QMediaCaptureSession *m_session = nullptr;
     QWindowCapture *m_capture = nullptr;
+    std::unique_ptr<NativeWindowCapture> m_nativeCapture;
     QVideoSink *m_sink = nullptr;
     QThread *m_sinkThread = nullptr;
     QProcess *m_command = nullptr;
@@ -71,6 +78,9 @@ private:
     QString m_executable;
     QString m_windowName;
     QString m_mutedProjectDirectory;
+    QString m_statusText = QStringLiteral("尚未连接动态壁纸");
+    QString m_failureReport;
+    QString m_captureDetail;
     std::shared_ptr<LatestVideoFrame> m_frames = std::make_shared<LatestVideoFrame>();
     QFutureWatcher<QImage> *m_rgbWatcher = nullptr;
     QImage m_pendingImage;
@@ -87,6 +97,7 @@ private:
     quint64 m_captureGeneration = 0;
     int m_captureRecoveryAttempts = 0;
     bool m_captureErrorPending = false;
+    bool m_usingNativeCapture = false;
     bool m_requested = false;
     bool m_paused = false;
     bool m_announced = false;

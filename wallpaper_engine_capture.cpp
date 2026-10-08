@@ -1,5 +1,6 @@
 #include "wallpaper_engine_capture.h"
 #include "video_frame_image.h"
+#include "native_window_capture.h"
 
 #include <QCoreApplication>
 #include <QCapturableWindow>
@@ -21,6 +22,9 @@
 #include <QVideoSink>
 #include <QWindowCapture>
 #include <QWidget>
+#include <QOperatingSystemVersion>
+#include <QSysInfo>
+#include <QJsonArray>
 #include <cmath>
 
 #ifdef Q_OS_WIN
@@ -220,6 +224,7 @@ WallpaperEngineCapture::WallpaperEngineCapture(QObject *parent) : QObject(parent
 {
     m_session = new QMediaCaptureSession(this);
     m_capture = new QWindowCapture(this);
+    m_nativeCapture = std::make_unique<NativeWindowCapture>();
     m_sink = new QVideoSink;
     m_command = new QProcess(this);
     m_rgbWatcher = new QFutureWatcher<QImage>(this);
@@ -273,7 +278,9 @@ WallpaperEngineCapture::WallpaperEngineCapture(QObject *parent) : QObject(parent
             fail(QStringLiteral("无法保持 Wallpaper Engine 专属渲染窗口不可见，已停止背景连接。"));
     });
     connect(&m_timeout, &QTimer::timeout, this, [this] {
-        fail(QStringLiteral("Wallpaper Engine 未输出动态画面，请先启动它，再重新连接背景。"));
+        if (m_requested && !m_paused && !m_usingNativeCapture && startNativeFallback())
+            return;
+        fail(QStringLiteral("Wallpaper Engine 连接超时，未收到动态画面。请在主题窗口复制连接信息。"));
     });
     // Backend frames replace a single buffer directly. A stalled GUI must not
     // accumulate queued callbacks and retained capture textures for old frames.
@@ -348,14 +355,13 @@ void WallpaperEngineCapture::start(const QString &executable, const QString &pro
         || (type != QStringLiteral("json") && type != QStringLiteral("pkg")
             && type != QStringLiteral("html") && type != QStringLiteral("mp4")
             && type != QStringLiteral("webm"))) {
-        if (onError)
-            onError(QStringLiteral("请选择已安装的 Wallpaper Engine 和有效的壁纸工程。"));
+        fail(QStringLiteral("请选择已安装的 Wallpaper Engine 和有效的壁纸工程。"));
         return;
     }
     QString wrapperError;
     const QString wrapper = mutedProject(project.absoluteFilePath(), m_mutedProjectDirectory, wrapperError);
     if (wrapper.isEmpty()) {
-        if (onError) onError(wrapperError);
+        fail(wrapperError);
         return;
     }
     m_executable = binary.absoluteFilePath();
@@ -394,13 +400,12 @@ void WallpaperEngineCapture::start(const QString &executable, const QString &pro
     }
     m_findTimer.start();
     m_timeout.start(18000);
-    if (onStatusChanged)
-        onStatusChanged(QStringLiteral("正在连接 Wallpaper Engine 动态壁纸…"));
+    updateStatus(QStringLiteral("正在连接 Wallpaper Engine 动态壁纸…"));
 }
 
 void WallpaperEngineCapture::findWindow()
 {
-    if (!m_requested || m_paused || m_captureErrorPending)
+    if (!m_requested || m_paused || m_captureErrorPending || m_usingNativeCapture)
         return;
 #ifdef Q_OS_WIN
     // Launch offscreen, apply zero opacity before moving to a capture-capable
@@ -410,6 +415,9 @@ void WallpaperEngineCapture::findWindow()
     // Do not resize an unready window into appearing ready for WGC.
     if (!rendererIsUsable(renderer, m_windowName)) {
         resetCaptureCandidate();
+        updateStatus(isNamedRenderer(renderer, m_windowName)
+            ? QStringLiteral("正在等待壁纸窗口初始化…")
+            : QStringLiteral("正在等待 Wallpaper Engine 创建壁纸窗口…"));
         return;
     }
     if (!parkWindow()) {
@@ -417,8 +425,10 @@ void WallpaperEngineCapture::findWindow()
         return;
     }
 #endif
-    if (!captureWindowReady())
+    if (!captureWindowReady()) {
+        updateStatus(QStringLiteral("正在等待壁纸窗口尺寸稳定…"));
         return;
+    }
     for (const auto &window : QWindowCapture::capturableWindows()) {
         if (window.isValid() && window.description() == m_windowName) {
             m_findTimer.stop();
@@ -445,9 +455,11 @@ void WallpaperEngineCapture::findWindow()
             if (m_paused)
                 ShowWindow(reinterpret_cast<HWND>(m_nativeWindow), SW_HIDE);
 #endif
+            updateStatus(QStringLiteral("已找到壁纸窗口，正在等待动态画面…"));
             return;
         }
     }
+    updateStatus(QStringLiteral("已找到壁纸窗口，正在等待 Windows 捕获识别…"));
 }
 
 void WallpaperEngineCapture::resetCaptureCandidate()
@@ -484,8 +496,10 @@ bool WallpaperEngineCapture::captureWindowReady()
 
 void WallpaperEngineCapture::handleCaptureError(int error, const QString &detail)
 {
-    if (!m_requested || m_paused || error == QWindowCapture::NoError || m_captureErrorPending)
+    if (!m_requested || m_paused || m_usingNativeCapture
+        || error == QWindowCapture::NoError || m_captureErrorPending)
         return;
+    m_captureDetail = detail;
     m_captureErrorPending = true;
     const quint64 generation = m_captureGeneration;
     const QString name = m_windowName;
@@ -497,6 +511,9 @@ void WallpaperEngineCapture::handleCaptureError(int error, const QString &detail
             return;
         const bool transient = error == QWindowCapture::CaptureFailed
             || error == QWindowCapture::InternalError || error == QWindowCapture::NotFound;
+        if (((transient && m_captureRecoveryAttempts >= 3)
+             || error == QWindowCapture::CapturingNotSupported) && startNativeFallback())
+            return;
         if (!transient || m_captureRecoveryAttempts >= 3) {
             fail(message);
             return;
@@ -521,7 +538,38 @@ void WallpaperEngineCapture::handleCaptureError(int error, const QString &detail
             m_frames->reset(true);
             m_findTimer.start();
         });
+        updateStatus(QStringLiteral("Windows 捕获暂时失败，正在重新连接（%1/3）…")
+            .arg(m_captureRecoveryAttempts));
     });
+}
+
+bool WallpaperEngineCapture::startNativeFallback()
+{
+#ifdef Q_OS_WIN
+    const HWND renderer = reinterpret_cast<HWND>(m_nativeWindow);
+    if (!rendererIsUsable(renderer, m_windowName))
+        return false;
+    ++m_captureGeneration;
+    m_findTimer.stop();
+    m_frameTimer.stop();
+    m_capture->stop();
+    drainSinkFrames();
+    resetConvertedFrames();
+    m_frames->reset(false);
+    m_usingNativeCapture = true;
+    m_announced = false;
+    m_captureErrorPending = false;
+    m_nativeCapture->start(m_nativeWindow);
+    m_frameClock.start();
+    m_frameSchedule.reset(0);
+    m_frameTimer.start(m_frameSchedule.delayMs(0));
+    m_guardTimer.start();
+    m_timeout.start(18000);
+    updateStatus(QStringLiteral("正在使用 Windows 原生兼容捕获连接壁纸…"));
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool WallpaperEngineCapture::parkWindow()
@@ -600,8 +648,20 @@ void WallpaperEngineCapture::publishFrame()
     // Arm before callbacks: a callback that pauses/stops the backend cancels
     // this timer, and the single latest-frame mailbox cannot grow while busy.
     m_frameTimer.start(m_frameSchedule.delayMs(now));
-    QImage image = std::exchange(m_pendingImage, QImage{});
-    if (!m_rgbConversionBusy) {
+    QImage image;
+    if (m_usingNativeCapture) {
+        const QString error = m_nativeCapture->errorString();
+        if (!error.isEmpty()) {
+            fail(QStringLiteral("壁纸兼容捕获失败：%1").arg(error));
+            return;
+        }
+        image = m_nativeCapture->takeLatestFrame();
+        if (!image.isNull() && image.size() != m_renderSize)
+            image = {};
+    } else {
+        image = std::exchange(m_pendingImage, QImage{});
+    }
+    if (!m_usingNativeCapture && !m_rgbConversionBusy) {
         const QVideoFrame frame = m_frames->take();
         if (frame.isValid()) {
             if (VideoFrames::canConvertRgb(frame)) {
@@ -618,9 +678,9 @@ void WallpaperEngineCapture::publishFrame()
     m_timeout.stop();
     if (!m_announced) {
         m_announced = true;
-        const auto status = onStatusChanged;
-        if (status)
-            status(QStringLiteral("Wallpaper Engine 动态背景已连接"));
+        updateStatus(m_usingNativeCapture
+            ? QStringLiteral("Wallpaper Engine 动态背景已连接（兼容捕获）")
+            : QStringLiteral("Wallpaper Engine 动态背景已连接"));
         if (!guard || generation != m_conversionGeneration || m_paused || !m_requested)
             return;
     }
@@ -664,6 +724,7 @@ void WallpaperEngineCapture::drainSinkFrames()
 
 void WallpaperEngineCapture::setPaused(bool paused)
 {
+    const QPointer<WallpaperEngineCapture> guard(this);
     if (m_paused == paused)
         return;
     if (!paused && m_requested && !muteWallpaper()) {
@@ -679,6 +740,7 @@ void WallpaperEngineCapture::setPaused(bool paused)
     m_frameTimer.stop();
     m_guardTimer.stop();
     m_capture->stop();
+    m_nativeCapture->stop();
     drainSinkFrames();
     m_frames->reset(m_requested && !paused);
     if (m_requested) {
@@ -700,16 +762,33 @@ void WallpaperEngineCapture::setPaused(bool paused)
     if (paused) {
         m_timeout.stop();
     } else if (m_requested) {
+        m_announced = false;
         // Re-enumerate and wait for the resumed native surface to settle.
-        m_findTimer.start();
+        if (m_usingNativeCapture) {
+            if (!startNativeFallback()) {
+                if (!guard)
+                    return;
+                fail(QStringLiteral("无法恢复壁纸兼容捕获，请重新选择背景。"));
+                return;
+            }
+            if (!guard || !m_requested || m_paused)
+                return;
+        } else {
+            m_findTimer.start();
+        }
         m_timeout.start(18000);
     }
+    if (m_requested)
+        updateStatus(paused ? QStringLiteral("动态壁纸已暂停，回到播放器后继续连接")
+            : m_usingNativeCapture ? QStringLiteral("正在恢复壁纸兼容捕获…")
+                                   : QStringLiteral("正在恢复 Wallpaper Engine 动态壁纸连接…"));
 }
 
 void WallpaperEngineCapture::setRenderSize(QSize pixels)
 {
     const QSize normalized = pixels.expandedTo(QSize(640, 360));
-    if (m_renderSize != normalized) {
+    const bool changed = m_renderSize != normalized;
+    if (changed) {
         m_renderSize = normalized;
         resetConvertedFrames();
         m_frames->reset(m_requested && !m_paused);
@@ -719,16 +798,22 @@ void WallpaperEngineCapture::setRenderSize(QSize pixels)
     if (isNamedRenderer(handle, m_windowName)) {
         RECT rect{};
         GetClientRect(handle, &rect);
-        if (rect.right == m_renderSize.width() && rect.bottom == m_renderSize.height())
-            return;
-        const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(handle, GWL_STYLE));
-        const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(handle, GWL_EXSTYLE));
-        RECT desired{0, 0, m_renderSize.width(), m_renderSize.height()};
-        AdjustWindowRectEx(&desired, style, FALSE, exStyle);
-        SetWindowPos(handle, nullptr, 0, 0, desired.right - desired.left,
-            desired.bottom - desired.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        if (rect.right != m_renderSize.width() || rect.bottom != m_renderSize.height()) {
+            const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(handle, GWL_STYLE));
+            const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(handle, GWL_EXSTYLE));
+            RECT desired{0, 0, m_renderSize.width(), m_renderSize.height()};
+            AdjustWindowRectEx(&desired, style, FALSE, exStyle);
+            SetWindowPos(handle, nullptr, 0, 0, desired.right - desired.left,
+                desired.bottom - desired.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
     }
 #endif
+    if (changed && m_usingNativeCapture && m_requested && !m_paused) {
+        // A new mailbox and cancellation token prevent an in-flight readback
+        // from publishing pixels from the previous native surface size.
+        if (!startNativeFallback())
+            fail(QStringLiteral("无法调整壁纸兼容捕获尺寸，请重新选择背景。"));
+    }
 }
 
 void WallpaperEngineCapture::setFrameInterval(int milliseconds)
@@ -763,6 +848,10 @@ void WallpaperEngineCapture::stop()
     m_announced = false;
     m_captureErrorPending = false;
     m_captureRecoveryAttempts = 0;
+    m_usingNativeCapture = false;
+    m_captureDetail.clear();
+    m_failureReport.clear();
+    m_statusText = QStringLiteral("已停止动态壁纸连接");
     resetCaptureCandidate();
     resetConvertedFrames();
     m_frames->reset(false);
@@ -772,6 +861,7 @@ void WallpaperEngineCapture::stop()
     m_guardTimer.stop();
     m_timeout.stop();
     m_capture->stop();
+    m_nativeCapture->stop();
     drainSinkFrames();
     m_frames->reset(false);
 #ifdef Q_OS_WIN
@@ -812,8 +902,93 @@ void WallpaperEngineCapture::stop()
 
 void WallpaperEngineCapture::fail(const QString &message)
 {
+    const QString report = buildDiagnosticReport(message);
     stop();
+    m_statusText = message;
+    m_failureReport = report;
     const auto callback = onError;
     if (callback)
         callback(message);
+}
+
+void WallpaperEngineCapture::updateStatus(const QString &status)
+{
+    if (m_statusText == status)
+        return;
+    m_statusText = status;
+    const auto callback = onStatusChanged;
+    if (callback)
+        callback(status);
+}
+
+QString WallpaperEngineCapture::diagnosticReport() const
+{
+    if (!m_failureReport.isEmpty() && !m_requested)
+        return m_failureReport;
+    return buildDiagnosticReport();
+}
+
+QString WallpaperEngineCapture::buildDiagnosticReport(const QString &error) const
+{
+    const auto version = QOperatingSystemVersion::current();
+    QJsonObject report{
+        {QStringLiteral("application_version"), QCoreApplication::applicationVersion()},
+        {QStringLiteral("qt_version"), QString::fromLatin1(qVersion())},
+        {QStringLiteral("windows_version"), QStringLiteral("%1.%2.%3")
+            .arg(version.majorVersion()).arg(version.minorVersion()).arg(version.microVersion())},
+        {QStringLiteral("system"), QSysInfo::prettyProductName()},
+        {QStringLiteral("status"), error.isEmpty() ? m_statusText : error},
+        {QStringLiteral("connection_phase_before_error"), m_statusText},
+        {QStringLiteral("requested"), error.isEmpty() && m_requested},
+        {QStringLiteral("paused"), m_paused},
+        {QStringLiteral("capture_active"), error.isEmpty() && (m_usingNativeCapture
+            ? m_nativeCapture->isActive() : m_capture->isActive())},
+        {QStringLiteral("native_fallback"), m_usingNativeCapture},
+        {QStringLiteral("timeout_remaining_ms"), m_timeout.remainingTime()},
+        {QStringLiteral("recovery_attempts"), m_captureRecoveryAttempts},
+        {QStringLiteral("last_error"), error},
+        {QStringLiteral("qt_capture_error_detail"), m_captureDetail},
+        {QStringLiteral("renderer_found"), false},
+        {QStringLiteral("renderer_visible"), false},
+        {QStringLiteral("renderer_client_width"), 0},
+        {QStringLiteral("renderer_client_height"), 0},
+    };
+    const QString requestedBackend = qEnvironmentVariable("QT_WINDOW_CAPTURE_BACKEND");
+    report.insert(QStringLiteral("qt_window_capture_backend_requested"),
+        requestedBackend.isEmpty() ? QStringLiteral("automatic")
+        : QStringList{QStringLiteral("uwp"), QStringLiteral("gdi"), QStringLiteral("grabwindow")}.contains(requestedBackend)
+            ? requestedBackend : QStringLiteral("custom"));
+#ifdef Q_OS_WIN
+    const HWND renderer = FindWindowW(nullptr, reinterpret_cast<LPCWSTR>(m_windowName.utf16()));
+    if (isNamedRenderer(renderer, m_windowName)) {
+        RECT bounds{};
+        report.insert(QStringLiteral("renderer_found"), true);
+        report.insert(QStringLiteral("renderer_visible"), bool(IsWindowVisible(renderer)));
+        report.insert(QStringLiteral("renderer_minimized"), bool(IsIconic(renderer)));
+        if (GetClientRect(renderer, &bounds)) {
+            report.insert(QStringLiteral("renderer_client_width"), int(bounds.right - bounds.left));
+            report.insert(QStringLiteral("renderer_client_height"), int(bounds.bottom - bounds.top));
+        }
+        report.insert(QStringLiteral("renderer_style"), QString::number(GetWindowLongPtrW(renderer, GWL_STYLE), 16));
+        report.insert(QStringLiteral("renderer_ex_style"), QString::number(GetWindowLongPtrW(renderer, GWL_EXSTYLE), 16));
+        COLORREF key{}; BYTE alpha{}; DWORD flags{};
+        if (GetLayeredWindowAttributes(renderer, &key, &alpha, &flags))
+            report.insert(QStringLiteral("renderer_opacity"), int(alpha));
+    }
+    QJsonArray adapters;
+    for (DWORD index = 0; index < 8; ++index) {
+        DISPLAY_DEVICEW device{};
+        device.cb = sizeof(device);
+        if (!EnumDisplayDevicesW(nullptr, index, &device, 0))
+            break;
+        if (device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)
+            adapters.append(QString::fromWCharArray(device.DeviceString));
+    }
+    report.insert(QStringLiteral("display_adapters"), adapters);
+#endif
+    if (m_usingNativeCapture) {
+        report.insert(QStringLiteral("native_capture"), QJsonObject{
+            {QStringLiteral("steps"), m_nativeCapture->diagnosticReport()}});
+    }
+    return QString::fromUtf8(QJsonDocument(report).toJson(QJsonDocument::Indented));
 }

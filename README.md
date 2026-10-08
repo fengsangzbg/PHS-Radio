@@ -10,6 +10,8 @@
 
 推荐新用户下载 **v0.2.3 正式版完整包**：保留 beta 系列的界面与性能改进，已包含酷狗设备身份保存、账号切换与搜索请求修复，无需另外下载或覆盖补丁。
 
+**v0.2.4-beta.1 为 Wallpaper Engine 兼容性测试版。** 修复打开主题窗口时误暂停壁纸连接的问题；Qt 捕获失败后自动尝试原生 Windows 捕获，并在主题面板保留连接状态与“复制连接信息”按钮。本机真实动态壁纸、高清缩放、暂停恢复和退出检查已通过；另一台电脑的“参数错误”仍需复测。测试版需要手动下载，软件的更新按钮仍使用正式版通道。
+
 ## 可以做什么
 
 - 酷狗扫码登录，读取账号歌单和歌单歌曲，汇总全部音乐。
@@ -23,7 +25,7 @@
 - 跟随 Windows 默认音频设备切换，支持耳机与扬声器切换。
 - 标题栏“更新”检查新版本，下载校验后安装并自动重启，保留登录及主题设置。
 
-软件免费使用。音乐能否播放由酷狗返回的音源及账号权限决定，会员、付费、地区与下架限制仍适用。目前发布版只开放酷狗，网易云与 QQ 音乐留待后续接入。
+软件免费使用。音乐能否播放取决于酷狗接口返回的音源及账号权限；不同账号可能取得不同结果。第三方接口与官方 App 的返回不一定一致，取得音源不代表歌曲没有会员或地区限制。目前发布版只开放酷狗，网易云与 QQ 音乐留待后续接入。
 
 ## 安装与使用
 
@@ -64,14 +66,14 @@ Dock 音量只控制软件内的音乐，不改变 Windows 主音量；背景继
 cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPHSRADIO_KUGOU_ONLY=ON
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.3
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.4-beta.1
 ```
 
 本机服务源码与依赖锁位于 `services/kugou`，开发或重新打包前运行 `npm ci --prefix services/kugou --omit=dev --ignore-scripts`。服务只监听本机 `127.0.0.1:3737`。
 
 `PHSRADIO_KUGOU_ONLY=ON` 生成仅开放酷狗的发布版。未开放平台的开发代码保留在仓库，测试不会使用真实账号。更多实现细节见 [开发说明](docs/development.md)。
 
-默认构建与打包版本为正式版 `0.2.3`。如需构建 beta，显式传入 `-DPHSRADIO_PRERELEASE=beta.N`（将 `N` 替换为序号），并以相同的 `0.2.3-beta.N` 版本号打包。已有 beta 构建目录转为正式版时，传入 `-DPHSRADIO_PRERELEASE=` 清空缓存中的预发布后缀。Beta 版的更新检查仍查询正式 Release，可正常升级到 v0.2.3 正式版及后续正式版本。
+当前开发构建与打包默认为 `0.2.4-beta.1`。已有构建目录需显式传入 `-DPHSRADIO_PRERELEASE=beta.1` 更新缓存。构建正式版时传入 `-DPHSRADIO_PRERELEASE=` 清空预发布后缀，并以相同的基础版本号打包。Beta 版的更新检查仍查询正式 Release，可升级到版本号更高的正式版本。
 
 ## 许可与依赖源码
 

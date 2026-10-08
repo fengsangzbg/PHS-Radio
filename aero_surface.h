@@ -41,6 +41,8 @@ public:
     // All dynamic background backends share the same visibility/activity policy.
     std::function<void(bool)> onBackgroundActivityChanged;
     bool backgroundIsActive() const;
+    // Synchronize activity after starting a backend or returning from a dialog.
+    bool synchronizeBackgroundActivity();
     void paintWater(QPainter &painter, const QRectF &bounds, const QPointF &worldOffset = {}) const;
     void paintBlurredBackground(QPainter &painter, const QRectF &bounds,
                                 const QPointF &worldOffset = {}) const;
@@ -58,6 +60,7 @@ private:
     QObject *m_displayObserver = nullptr;
     bool m_windowDeactivated = false;
     bool m_backgroundActive = false;
+    bool m_backgroundActivitySyncPending = false;
     QTimer *m_motionTimer;
     QElapsedTimer m_frameClock;
     QElapsedTimer m_presentationClock;
@@ -100,6 +103,7 @@ private:
     void paintWaterFrame(QPainter &painter, const QRectF &bounds,
                          const QPointF &worldOffset) const;
     void updateAnimationState();
+    void scheduleBackgroundActivitySync();
     void updateDisplayRate();
     void publishVideoFrame();
     void advanceWater();

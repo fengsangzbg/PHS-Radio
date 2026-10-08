@@ -430,6 +430,112 @@ void checkBlurPresentationLifecycle(const QString &projectPath, const QString &i
     }
 }
 
+void checkBackgroundActivitySynchronization()
+{
+    QWidget player;
+    player.resize(320, 200);
+    AeroSurface surface(&player);
+    surface.setGeometry(player.rect());
+    QDialog settings(&player);
+    settings.resize(160, 100);
+    QDialog fileDialog(&settings);
+    fileDialog.resize(120, 80);
+    check(settings.isWindow() && settings.parentWidget() == &player
+              && !player.isAncestorOf(&settings)
+              && fileDialog.isWindow() && fileDialog.parentWidget() == &settings,
+          "The dialog fixtures must exercise ownership across top-level window boundaries rather than ordinary widget ancestry.");
+    QWidget outsidePlayer;
+    outsidePlayer.resize(160, 100);
+    bool backendPaused = true;
+    int activityChanges = 0;
+    surface.onBackgroundActivityChanged = [&](bool active) {
+        backendPaused = !active;
+        ++activityChanges;
+    };
+    const auto activate = [](QWidget &widget) {
+        widget.show();
+        widget.raise();
+        widget.activateWindow();
+        check(until([&] { return QApplication::activeWindow() == &widget; }),
+              "The activity fixture must focus its own requested window.");
+    };
+
+    activate(player);
+    check(until([&] { return surface.m_backgroundActive && !backendPaused; })
+              && surface.animationRunning(),
+          "An active player must synchronize its backend and animate its visible background.");
+    activate(settings);
+    check(until([&] { return surface.m_backgroundActive && !backendPaused; })
+              && surface.backgroundIsActive(),
+          "An owned settings dialog must keep the player's background active.");
+
+    // The main window is already deactivated. Subsequent dialog-to-window
+    // focus changes do not send it another activation/deactivation event.
+    activate(outsidePlayer);
+    check(until([&] { return !surface.m_backgroundActive && backendPaused; })
+              && !surface.backgroundIsActive() && !surface.animationRunning(),
+          "Moving from an owned dialog to another window must pause the player's backend and rendering.");
+    activate(settings);
+    check(until([&] { return surface.m_backgroundActive && !backendPaused; })
+              && surface.backgroundIsActive() && surface.animationRunning(),
+          "Returning to an owned dialog must resume activity while the main window remains deactivated.");
+
+    activate(fileDialog);
+    check(until([&] { return surface.m_backgroundActive && !backendPaused; })
+              && surface.backgroundIsActive(),
+          "A nested owned file dialog must preserve background activity.");
+    fileDialog.close();
+    activate(settings);
+    check(until([&] { return surface.m_backgroundActive && !backendPaused; }),
+          "Closing a file dialog and returning to settings must retain synchronized activity.");
+
+    // Reproduce the transient active-window state seen when a file picker
+    // returns before the deferred focus notification has been processed.
+    // Both switches leave the main window deactivated, so its event filter
+    // cannot synchronize the background on its own.
+    surface.synchronizeBackgroundActivity();
+    QApplication::setActiveWindow(&outsidePlayer);
+    check(!surface.backgroundIsActive() && surface.m_backgroundActive,
+          "The fixture must expose actual inactivity before the cached state is synchronized.");
+    BackgroundTheme sameTheme = surface.backgroundTheme();
+    sameTheme.dimming = 20;
+    check(surface.setBackground(sameTheme) && !surface.m_backgroundActive
+              && backendPaused && !surface.animationRunning(),
+          "Applying readability changes to the same source must synchronize activity instead of retaining a stale active cache.");
+    QApplication::setActiveWindow(&settings);
+    check(surface.backgroundIsActive() && !surface.m_backgroundActive,
+          "Returning to an owned dialog must expose the inverse cached-state mismatch before its deferred notification.");
+    check(surface.synchronizeBackgroundActivity() && !backendPaused
+              && surface.animationRunning(),
+          "Explicit backend synchronization must restore a paused source immediately after foreground activity returns.");
+    const int synchronizedChanges = activityChanges;
+    check(surface.synchronizeBackgroundActivity() && activityChanges == synchronizedChanges,
+          "Repeated synchronization must not emit duplicate activity changes for an unchanged state.");
+
+    settings.close();
+    activate(player);
+    check(until([&] { return surface.m_backgroundActive && !backendPaused; })
+              && surface.backgroundIsActive(),
+          "Closing settings must return to an active player with its backend resumed.");
+    QDialog modalSettings(&player);
+    modalSettings.setModal(true);
+    modalSettings.resize(160, 100);
+    activate(modalSettings);
+    check(modalSettings.isModal()
+              && until([&] { return surface.m_backgroundActive && !backendPaused; })
+              && surface.backgroundIsActive(),
+          "A modal owned settings window must keep the player's background active while its main window is disabled.");
+    modalSettings.close();
+    activate(player);
+    check(until([&] { return surface.m_backgroundActive && !backendPaused; }),
+          "Closing modal settings must preserve resumed background activity.");
+    player.hide();
+    check(!surface.synchronizeBackgroundActivity() && backendPaused
+              && !surface.animationRunning(),
+          "Hiding the player must pause its backend and stop rendering even after owned-dialog transitions.");
+    surface.onBackgroundActivityChanged = {};
+}
+
 void reportFramePainting(AeroSurface &surface, const QString &projectPath)
 {
     surface.resize(1100, 700);
@@ -513,6 +619,7 @@ int main(int argc, char **argv)
         return 0;
     }
     checkFractionalFrameSharingProcess();
+    checkBackgroundActivitySynchronization();
     QImage image(320, 200, QImage::Format_RGB32);
     image.fill(QColor(220, 30, 20));
     { QPainter painter(&image); painter.fillRect(QRect(160, 0, 160, 200), QColor(20, 40, 220)); }

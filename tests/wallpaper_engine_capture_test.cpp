@@ -12,6 +12,7 @@
 #define private public
 #include "../wallpaper_engine_capture.h"
 #undef private
+#include "../native_window_capture.h"
 // Keep the descriptor helpers testable without launching an external engine.
 #include "../wallpaper_engine_capture.cpp"
 
@@ -560,6 +561,224 @@ QString rendererFixtureName()
         .arg(QCoreApplication::applicationPid()).arg(QUuid::createUuid().toString(QUuid::Id128));
 }
 
+QJsonObject connectionDiagnostics(WallpaperEngineCapture &capture)
+{
+    // Inspection alone must never expose installation/project locations. Restore
+    // both values before any assertion can unwind into stop() or engine control.
+    const QString executable = capture.m_executable;
+    const QString projectDirectory = capture.m_mutedProjectDirectory;
+    capture.m_executable = QStringLiteral("C:/Users/PrivateDiagnosticAccountFixture/PrivateDiagnosticEngine/wallpaper64.exe");
+    capture.m_mutedProjectDirectory = QStringLiteral("C:/Users/PrivateDiagnosticAccountFixture/PrivateDiagnosticProject");
+    const QString report = capture.diagnosticReport();
+    const QString status = capture.statusText();
+    capture.m_executable = executable;
+    capture.m_mutedProjectDirectory = projectDirectory;
+
+    QJsonParseError error{};
+    const QJsonDocument document = QJsonDocument::fromJson(report.toUtf8(), &error);
+    check(error.error == QJsonParseError::NoError && document.isObject(),
+          "Connection diagnostics must be a parseable JSON object.");
+    const QJsonObject object = document.object();
+    const QSet<QString> fields{
+        QStringLiteral("status"), QStringLiteral("requested"), QStringLiteral("paused"),
+        QStringLiteral("renderer_found"), QStringLiteral("renderer_visible"),
+        QStringLiteral("renderer_client_width"), QStringLiteral("renderer_client_height"),
+        QStringLiteral("capture_active"), QStringLiteral("last_error"),
+        QStringLiteral("timeout_remaining_ms")};
+    const QSet<QString> optionalFields{
+        QStringLiteral("application_version"), QStringLiteral("qt_version"),
+        QStringLiteral("windows_version"), QStringLiteral("system"),
+        QStringLiteral("connection_phase_before_error"), QStringLiteral("native_fallback"),
+        QStringLiteral("recovery_attempts"), QStringLiteral("qt_capture_error_detail"),
+        QStringLiteral("qt_window_capture_backend_requested"), QStringLiteral("display_adapters"),
+        QStringLiteral("renderer_minimized"), QStringLiteral("renderer_style"),
+        QStringLiteral("renderer_ex_style"), QStringLiteral("renderer_opacity"), QStringLiteral("native_capture")};
+    for (const QString &field : fields)
+        check(object.contains(field), "Diagnostics must contain every documented connection-state field.");
+    for (const QString &field : object.keys())
+        check(fields.contains(field) || optionalFields.contains(field),
+              "Diagnostic extensions must describe the capture environment without adding account or file metadata.");
+    check(object.value(QStringLiteral("status")).isString()
+              && object.value(QStringLiteral("status")).toString() == status && !status.isEmpty()
+              && object.value(QStringLiteral("last_error")).isString(),
+          "Diagnostic status must match the current public status, and errors must be text.");
+    for (const QString &field : {QStringLiteral("requested"), QStringLiteral("paused"),
+             QStringLiteral("renderer_found"), QStringLiteral("renderer_visible"), QStringLiteral("capture_active")})
+        check(object.value(field).isBool(), "Diagnostic state flags must remain JSON booleans.");
+    for (const QString &field : {QStringLiteral("renderer_client_width"), QStringLiteral("renderer_client_height"),
+             QStringLiteral("timeout_remaining_ms")}) {
+        const QJsonValue value = object.value(field);
+        check(value.isDouble() && value.toDouble() == double(value.toInt()),
+              "Diagnostic sizes and remaining deadlines must remain JSON integers.");
+    }
+    const QString decoded = QString::fromUtf8(document.toJson(QJsonDocument::Compact));
+    check(!decoded.contains(QStringLiteral("PrivateDiagnosticAccountFixture"))
+              && !decoded.contains(QStringLiteral("PrivateDiagnosticEngine"))
+              && !decoded.contains(QStringLiteral("PrivateDiagnosticProject")),
+          "Every state report must redact private account, executable and project paths.");
+    return object;
+}
+
+void connectionWaitingPauseTest()
+{
+    WallpaperEngineCapture capture;
+    capture.m_requested = true;
+    capture.m_windowName = rendererFixtureName();
+    capture.m_renderSize = QSize(900, 600);
+    // This test binary exits immediately for WE control arguments; resume can
+    // retain the production mute requirement without invoking a real engine.
+    capture.m_executable = QCoreApplication::applicationFilePath();
+    capture.m_findTimer.start();
+    capture.m_timeout.start(18000);
+    int errors = 0;
+    capture.onError = [&](const QString &) { ++errors; };
+    capture.findWindow();
+    const QJsonObject waiting = connectionDiagnostics(capture);
+    check(waiting.value(QStringLiteral("requested")).toBool()
+              && !waiting.value(QStringLiteral("paused")).toBool()
+              && !waiting.value(QStringLiteral("renderer_found")).toBool()
+              && !waiting.value(QStringLiteral("renderer_visible")).toBool()
+              && waiting.value(QStringLiteral("renderer_client_width")).toInt() == 0
+              && waiting.value(QStringLiteral("renderer_client_height")).toInt() == 0
+              && !waiting.value(QStringLiteral("capture_active")).toBool()
+              && waiting.value(QStringLiteral("last_error")).toString().isEmpty()
+              && waiting.value(QStringLiteral("timeout_remaining_ms")).toInt() > 0,
+          "A requested source with no named renderer must report waiting without inventing a window or frames.");
+    const QString waitingStatus = waiting.value(QStringLiteral("status")).toString();
+
+    capture.setPaused(true);
+    const QJsonObject paused = connectionDiagnostics(capture);
+    check(paused.value(QStringLiteral("requested")).toBool()
+              && paused.value(QStringLiteral("paused")).toBool()
+              && paused.value(QStringLiteral("status")).toString() != waitingStatus
+              && !paused.value(QStringLiteral("capture_active")).toBool()
+              && paused.value(QStringLiteral("timeout_remaining_ms")).toInt() <= 0
+              && !capture.m_findTimer.isActive() && !capture.m_frameTimer.isActive()
+              && !capture.m_guardTimer.isActive() && !capture.m_timeout.isActive(),
+          "Pausing a waiting source must expose a paused status and suspend discovery, frames and the startup deadline.");
+    capture.findWindow();
+    check(connectionDiagnostics(capture).value(QStringLiteral("status")).toString()
+              == paused.value(QStringLiteral("status")).toString(),
+          "A paused discovery call must retain paused status rather than announce connecting again.");
+
+    capture.setPaused(false);
+    capture.findWindow();
+    const QJsonObject resumed = connectionDiagnostics(capture);
+    check(resumed.value(QStringLiteral("requested")).toBool()
+              && !resumed.value(QStringLiteral("paused")).toBool()
+              && resumed.value(QStringLiteral("status")).toString() == waitingStatus
+              && !resumed.value(QStringLiteral("renderer_found")).toBool()
+              && !resumed.value(QStringLiteral("capture_active")).toBool()
+              && resumed.value(QStringLiteral("timeout_remaining_ms")).toInt() > 0
+              && capture.m_findTimer.isActive() && capture.m_timeout.isActive() && errors == 0,
+          "Resuming without a renderer must return to waiting with discovery and a bounded deadline active.");
+    capture.m_executable.clear();
+    capture.stop();
+    const QJsonObject stopped = connectionDiagnostics(capture);
+    check(!stopped.value(QStringLiteral("requested")).toBool()
+              && !stopped.value(QStringLiteral("renderer_found")).toBool()
+              && stopped.value(QStringLiteral("last_error")).toString().isEmpty()
+              && !capture.m_findTimer.isActive() && !capture.m_timeout.isActive(),
+          "An explicit stop must clear waiting state and retain no stale error.");
+}
+
+void connectionTimeoutDiagnosticsTest()
+{
+    const QString name = rendererFixtureName();
+    NativeFixture renderer(name, QSize(900, 600));
+    NativeFixture unrelated(QStringLiteral("UnrelatedDiagnosticFixture_%1")
+        .arg(QCoreApplication::applicationPid()));
+    const QSize foreignSize = nativeSize(unrelated.window);
+    WallpaperEngineCapture capture;
+    // Own a visible, correctly sized HWND, but never start real Qt capture or
+    // issue a WE command. The production deadline handles its missing frames.
+    capture.m_requested = true;
+    capture.m_windowName = name;
+    capture.m_nativeWindow = reinterpret_cast<quintptr>(renderer.window);
+    capture.m_renderSize = QSize(900, 600);
+    capture.m_usingNativeCapture = true; // The fallback has also waited without producing any frames.
+    int errors = 0;
+    QString failure;
+    QJsonObject callbackReport;
+    capture.onError = [&](const QString &message) {
+        ++errors;
+        failure = message;
+        callbackReport = connectionDiagnostics(capture);
+    };
+    capture.m_timeout.start(40);
+    const QJsonObject before = connectionDiagnostics(capture);
+    check(before.value(QStringLiteral("requested")).toBool()
+              && before.value(QStringLiteral("renderer_found")).toBool()
+              && before.value(QStringLiteral("renderer_visible")).toBool()
+              && before.value(QStringLiteral("renderer_client_width")).toInt() == 900
+              && before.value(QStringLiteral("renderer_client_height")).toInt() == 600
+              && !before.value(QStringLiteral("capture_active")).toBool(),
+          "Diagnostics must distinguish an existing renderer surface from an active capture backend.");
+    check(until([&] { return errors == 1; }, 900) && !capture.m_requested && !failure.isEmpty(),
+          "A renderer that never produces frames must terminate once at its total startup deadline.");
+    const auto checkFailure = [&](const QJsonObject &report) {
+        check(!report.value(QStringLiteral("requested")).toBool()
+                  && report.value(QStringLiteral("renderer_found")).toBool()
+                  && report.value(QStringLiteral("renderer_visible")).toBool()
+                  && report.value(QStringLiteral("renderer_client_width")).toInt() == 900
+                  && report.value(QStringLiteral("renderer_client_height")).toInt() == 600
+                  && !report.value(QStringLiteral("capture_active")).toBool()
+                  && report.value(QStringLiteral("last_error")).toString() == failure,
+              "Terminal diagnostics must retain the failing native surface and error while reflecting stopped capture.");
+    };
+    checkFailure(callbackReport);
+    events(100);
+    check(errors == 1 && !capture.m_requested && !capture.m_timeout.isActive()
+              && !capture.m_findTimer.isActive() && !capture.m_capture->isActive()
+              && !IsWindow(renderer.window),
+          "The startup timeout must close only its owned renderer and never repeat or restart discovery.");
+    checkFailure(connectionDiagnostics(capture));
+    check(IsWindow(unrelated.window) && IsWindowVisible(unrelated.window)
+              && nativeSize(unrelated.window) == foreignSize,
+          "Failure diagnostics and cleanup must leave every unrelated desktop window intact.");
+
+    capture.stop();
+    const QJsonObject stopped = connectionDiagnostics(capture);
+    check(!stopped.value(QStringLiteral("requested")).toBool()
+              && !stopped.value(QStringLiteral("renderer_found")).toBool()
+              && !stopped.value(QStringLiteral("renderer_visible")).toBool()
+              && stopped.value(QStringLiteral("renderer_client_width")).toInt() == 0
+              && stopped.value(QStringLiteral("renderer_client_height")).toInt() == 0
+              && stopped.value(QStringLiteral("last_error")).toString().isEmpty(),
+          "Explicit stop must clear terminal error snapshots instead of carrying them into later source states.");
+
+    // Seed another owned failure to check source replacement independently of
+    // explicit stop; this calls the same terminal path without a second timeout.
+    const QString replacementName = rendererFixtureName();
+    NativeFixture replacementRenderer(replacementName, QSize(1024, 768));
+    capture.m_requested = true;
+    capture.m_windowName = replacementName;
+    capture.m_nativeWindow = reinterpret_cast<quintptr>(replacementRenderer.window);
+    capture.fail(QStringLiteral("Owned source-replacement failure fixture"));
+    const QString previousFailure = failure;
+    const QJsonObject preceding = connectionDiagnostics(capture);
+    check(preceding.value(QStringLiteral("renderer_found")).toBool()
+              && preceding.value(QStringLiteral("renderer_client_width")).toInt() == 1024
+              && preceding.value(QStringLiteral("renderer_client_height")).toInt() == 768
+              && preceding.value(QStringLiteral("last_error")).toString() == previousFailure,
+          "The source-replacement fixture must start with a retained native failure snapshot.");
+
+    // This public new-source attempt is intentionally invalid, so it exercises
+    // source replacement and validation without launching any external process.
+    capture.start(QString(), QString(), QSize(900, 600));
+    const QJsonObject replacement = connectionDiagnostics(capture);
+    check(!replacement.value(QStringLiteral("requested")).toBool()
+              && !replacement.value(QStringLiteral("renderer_found")).toBool()
+              && !replacement.value(QStringLiteral("renderer_visible")).toBool()
+              && replacement.value(QStringLiteral("renderer_client_width")).toInt() == 0
+              && replacement.value(QStringLiteral("renderer_client_height")).toInt() == 0
+              && replacement.value(QStringLiteral("last_error")).toString() != previousFailure,
+          "A new-source attempt must clear the preceding renderer failure before reporting its own validation state.");
+    capture.stop();
+    check(connectionDiagnostics(capture).value(QStringLiteral("last_error")).toString().isEmpty(),
+          "Explicit stop must also clear a new source's validation error.");
+}
+
 void captureReadinessTest()
 {
     const QString name = rendererFixtureName();
@@ -822,11 +1041,54 @@ void nativeIsolationTest()
           "A stale HWND must not hide, resize or close an unrelated window.");
 }
 
+void nativeWorkerShutdownTest()
+{
+    const QString name = rendererFixtureName();
+    NativeFixture renderer(name, QSize(900, 600));
+    const quintptr window = reinterpret_cast<quintptr>(renderer.window);
+    NativeWindowCapture restarted;
+    NativeWindowCapture concurrent;
+    // Each restart leaves its cancelled generation owned by its worker. Do not
+    // require capture initialization or a particular GPU/backend to succeed.
+    for (int generation = 0; generation < 4; ++generation) {
+        restarted.start(window);
+        restarted.stop();
+        check(!restarted.isActive() && restarted.takeLatestFrame().isNull(),
+              "Stopping a native generation must immediately disable it and discard every buffered frame.");
+    }
+    restarted.start(window);
+    concurrent.start(window);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const bool finished = NativeWindowCapture::shutdownWorkers(1000);
+    const qint64 shutdownMs = elapsed.elapsed();
+    check(finished && shutdownMs <= 1500,
+          "Exit shutdown must release every current and cancelled native worker within one bounded total deadline.");
+    check(!restarted.isActive() && !concurrent.isActive()
+              && restarted.takeLatestFrame().isNull() && concurrent.takeLatestFrame().isNull(),
+          "Completed exit shutdown must leave no active owner or buffered capture frame.");
+    check(IsWindow(renderer.window) && IsWindowVisible(renderer.window)
+              && nativeSize(renderer.window) == QSize(900, 600),
+          "Worker shutdown must release capture resources without modifying its test-owned renderer.");
+
+    restarted.start(window);
+    NativeWindowCapture newOwner;
+    newOwner.start(window);
+    check(!restarted.isActive() && !newOwner.isActive()
+              && !restarted.errorString().isEmpty() && !newOwner.errorString().isEmpty()
+              && restarted.takeLatestFrame().isNull() && newOwner.takeLatestFrame().isNull(),
+          "After irreversible exit shutdown, both reused and newly created owners must reject new workers.");
+    check(NativeWindowCapture::shutdownWorkers(0),
+          "A completed shutdown must remain immediately complete after rejected restart attempts.");
+    qInfo("Native capture exit cleanup completed in %lld ms.", qlonglong(shutdownMs));
+}
+
 void liveEngineTest(const QString &executable, const QString &project)
 {
     NativeFixture independent(QStringLiteral("UnrelatedWallpaperLive_%1").arg(QCoreApplication::applicationPid()));
     WallpaperEngineCapture capture;
     QSet<QByteArray> frames;
+    QVector<QSize> deliveredSizes;
     int count = 0;
     bool resized = false;
     bool opaque = false;
@@ -837,6 +1099,7 @@ void liveEngineTest(const QString &executable, const QString &project)
     capture.onError = [&](const QString &message) {error = message;};
     capture.onFrame = [&](const QImage &image) {
         if (!count) first = image.size();
+        deliveredSizes.append(image.size());
         const QImage small = image.scaled(80, 45).convertToFormat(QImage::Format_ARGB32);
         frames.insert(QCryptographicHash::hash(QByteArrayView(reinterpret_cast<const char *>(small.constBits()), small.sizeInBytes()), QCryptographicHash::Sha256));
         opaque |= qAlpha(image.pixel(image.width() / 2, image.height() / 2)) == 255;
@@ -853,17 +1116,63 @@ void liveEngineTest(const QString &executable, const QString &project)
           "Zero desktop opacity must retain sharp opaque original frames, rather than black or static images.");
     const HWND window = reinterpret_cast<HWND>(capture.m_nativeWindow);
     check(fullyTransparent(window) && IsWindowVisible(window), "The actual engine renderer must be completely transparent while active.");
+
+    count = 0;
+    frames.clear();
+    deliveredSizes.clear();
+    first = {};
+    resized = false;
+    opaque = false;
+    capture.m_capture->errorOccurred(QWindowCapture::CaptureFailed, QStringLiteral("Late Qt recovery fixture"));
+    check(capture.m_captureErrorPending,
+          "The live transition fixture must retain a queued Qt recovery before switching capture backends.");
+    const quint64 previousGeneration = capture.m_captureGeneration;
+    check(capture.startNativeFallback() && capture.m_usingNativeCapture
+              && capture.m_captureGeneration != previousGeneration,
+          "The explicit native fallback must accept the owned renderer and invalidate every pending Qt recovery.");
+    check(until([&] { return (count >= 20 && frames.size() >= 10) || !error.isEmpty(); }),
+          "Native compatibility capture must produce distinct dynamic frames from the transparent live renderer.");
+    std::fprintf(stderr, "Native-fallback capture: frames=%d distinct=%lld first=%dx%d opaque=%d elapsed_ms=%lld error=%s\n",
+                 count, static_cast<long long>(frames.size()), first.width(), first.height(), opaque,
+                 static_cast<long long>(time.elapsed()), error.toUtf8().constData());
+    check(error.isEmpty() && count >= 20 && frames.size() >= 10
+              && first == QSize(1920, 1080) && opaque && capture.m_usingNativeCapture
+              && !capture.m_capture->isActive() && !capture.m_findTimer.isActive()
+              && fullyTransparent(window) && IsWindowVisible(window),
+          "Native fallback must retain opaque, full-resolution moving wallpaper while desktop opacity stays zero.");
+
+    const QSize activeResize(2000, 1120);
+    capture.setRenderSize(activeResize);
+    count = 0;
+    frames.clear();
+    deliveredSizes.clear();
+    first = {};
+    opaque = false;
+    check(until([&] { return count >= 10 || !error.isEmpty(); }),
+          "Resizing native capture during playback must deliver frames from the replacement surface.");
+    check(error.isEmpty() && count >= 10 && capture.m_usingNativeCapture && !capture.m_paused
+              && opaque && fullyTransparent(window) && nativeSize(window) == activeResize,
+          "An active native resize must preserve playback, opacity and the requested renderer size.");
+    for (const QSize &size : deliveredSizes)
+        check(size == activeResize,
+              "Every frame delivered after an active native resize must match its new size, with no stale old-surface frames.");
+
     capture.setPaused(true);
-    check(!IsWindowVisible(window), "Pausing/minimizing must genuinely hide the actual engine renderer.");
+    check(capture.m_usingNativeCapture && !IsWindowVisible(window),
+          "Pausing native compatibility capture must genuinely hide the actual engine renderer.");
     const int pausedCount = count;
     events(350);
     check(count == pausedCount, "No background frames may be published while inactive.");
     capture.setRenderSize(QSize(2048, 1152));
+    frames.clear();
+    deliveredSizes.clear();
+    opaque = false;
     capture.setPaused(false);
-    check(until([&] {return (count >= pausedCount + 30 && resized) || !error.isEmpty();}),
-          "Hidden pause/resume and a high-DPI resize must restore moving frames.");
-    check(error.isEmpty() && fullyTransparent(window) && nativeSize(window) == QSize(2048, 1152),
-          "Resuming must keep the external renderer invisible at full resolution.");
+    check(until([&] {return (count >= pausedCount + 30 && frames.size() >= 10 && resized) || !error.isEmpty();}),
+          "Native compatibility capture must restore moving frames after hidden pause/resume and a high-DPI resize.");
+    check(error.isEmpty() && capture.m_usingNativeCapture && opaque
+              && fullyTransparent(window) && nativeSize(window) == QSize(2048, 1152),
+          "Resuming native fallback must keep the external renderer invisible with opaque frames at full resolution.");
     const QString name = capture.windowName();
     capture.stop();
     check(!IsWindowVisible(window), "Stop must conceal the renderer immediately, before engine close completes.");
@@ -879,6 +1188,8 @@ void liveEngineTest(const QString &executable, const QString &project)
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && std::strcmp(argv[1], "-control") == 0)
+        return 0; // Side-effect-free control-command substitute for owned fixtures.
 #ifdef Q_OS_WIN
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
 #endif
@@ -895,15 +1206,21 @@ int main(int argc, char **argv)
         if (application.arguments().size() == 4 && application.arguments().at(1) == QStringLiteral("--live"))
             liveEngineTest(application.arguments().at(2), application.arguments().at(3));
         else {
+            connectionWaitingPauseTest();
+            connectionTimeoutDiagnosticsTest();
             captureReadinessTest();
             captureRecoveryTest();
             captureRecoveryCancellationTest();
             nativeIsolationTest();
         }
+        // Irreversibly disables new native workers, so this must remain last,
+        // after both the isolated regressions and the optional live WE run.
+        nativeWorkerShutdownTest();
 #endif
         qInfo("Wallpaper Engine capture regressions passed.");
         return 0;
     } catch (const std::exception &error) {
+        NativeWindowCapture::shutdownWorkers(1000);
         qCritical("%s", error.what());
         return 1;
     }

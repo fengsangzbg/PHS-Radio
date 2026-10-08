@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(PHSRadio VERSION 0.2.3 LANGUAGES CXX)
+project(PHSRadio VERSION 0.2.4 LANGUAGES CXX)
 
-set(PHSRADIO_PRERELEASE "" CACHE STRING "Prerelease suffix; empty for a stable build")
+set(PHSRADIO_PRERELEASE "beta.1" CACHE STRING "Prerelease suffix; empty for a stable build")
 set(PHSRADIO_VERSION_STRING "${PROJECT_VERSION}")
 set(PHSRADIO_VERSION_FLAGS "0")
 if(PHSRADIO_PRERELEASE)
@@ -72,12 +72,13 @@ add_library(AeroWidgets STATIC
     home_page.h home_page.cpp song_page.h song_page.cpp
     background_theme.h background_theme.cpp theme_panel.h theme_panel.cpp
     wallpaper_engine_capture.h wallpaper_engine_capture.cpp
+    native_window_capture.h native_window_capture.cpp
     latest_video_frame.h
     glass_title_bar.h glass_title_bar.cpp
     resources/platforms.qrc resources/app.qrc)
 target_link_libraries(AeroWidgets PUBLIC Qt6::Widgets Qt6::Multimedia PRIVATE VideoFrameImages)
 if(WIN32)
-    target_link_libraries(AeroWidgets PRIVATE user32)
+    target_link_libraries(AeroWidgets PRIVATE user32 d3d11 dxgi runtimeobject ole32)
 endif()
 
 add_library(UpdateWidgets STATIC update_panel.h update_panel.cpp)

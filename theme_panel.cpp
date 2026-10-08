@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QClipboard>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -107,6 +108,23 @@ ThemePanel::ThemePanel(QWidget *parent)
     m_libraryStatus->setWordWrap(true);
     m_libraryStatus->setTextFormat(Qt::PlainText);
     layout->addWidget(m_libraryStatus);
+    auto *connection = new QHBoxLayout;
+    m_wallpaperStatus = new QLabel(this);
+    m_wallpaperStatus->setObjectName(QStringLiteral("wallpaperConnectionStatus"));
+    m_wallpaperStatus->setWordWrap(true);
+    m_wallpaperStatus->setTextFormat(Qt::PlainText);
+    auto *copyConnection = new JellyButton(QStringLiteral("复制连接信息"), this);
+    copyConnection->setToolTip(QStringLiteral("复制当前壁纸连接状态和错误信息，便于排查兼容问题。"));
+    connection->addWidget(m_wallpaperStatus, 1);
+    connection->addWidget(copyConnection);
+    layout->addLayout(connection);
+    connect(copyConnection, &QPushButton::clicked, this, [this] {
+        if (!diagnosticsProvider)
+            return;
+        const QString diagnostics = diagnosticsProvider();
+        if (!diagnostics.isEmpty())
+            QApplication::clipboard()->setText(diagnostics);
+    });
     auto *hint = new QLabel(QStringLiteral("视频背景保持静音。场景和网页由 Wallpaper Engine 实时运行，原桌面壁纸保持原样。"), this);
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("color: #94a3b4; font-size: 12px;"));
@@ -195,6 +213,11 @@ void ThemePanel::setTheme(const BackgroundTheme &theme)
 }
 
 BackgroundTheme ThemePanel::theme() const { return m_theme; }
+
+void ThemePanel::setWallpaperStatus(const QString &status)
+{
+    m_wallpaperStatus->setText(QStringLiteral("动态壁纸连接：%1").arg(status));
+}
 
 void ThemePanel::selectTheme(const BackgroundTheme &theme)
 {

@@ -84,6 +84,13 @@ AeroSurface::AeroSurface(QWidget *parent)
     m_displayObserver = Aero::observeDisplayRefresh(this, this, [this] { updateDisplayRate(); });
     if (m_window)
         m_window->installEventFilter(this);
+    // A settings/file dialog can regain or lose focus while the application
+    // window remains deactivated, so its events alone cannot track activity.
+    // Qt finishes updating activeWindow after some focus notifications.
+    connect(qApp, &QGuiApplication::focusWindowChanged, this,
+            [this](QWindow *) { scheduleBackgroundActivitySync(); });
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+            [this](Qt::ApplicationState) { scheduleBackgroundActivitySync(); });
 }
 
 AeroSurface::~AeroSurface()
@@ -120,6 +127,7 @@ bool AeroSurface::setBackground(const BackgroundTheme &theme, QString *error)
         m_background = theme;
         m_background.dimming = std::clamp(theme.dimming, 0, 85);
         ++m_revision;
+        synchronizeBackgroundActivity();
         repaintBackground();
         if (error)
             error->clear();
@@ -615,10 +623,35 @@ bool AeroSurface::backgroundIsActive() const
 {
     QWidget *currentWindow = window();
     QWidget *activeWindow = QApplication::activeWindow();
-    const bool ownedDialogActive = activeWindow && activeWindow != currentWindow
-        && currentWindow && currentWindow->isAncestorOf(activeWindow);
+    bool ownedDialogActive = false;
+    // QWidget::isAncestorOf stops at window boundaries. Owned QDialogs are
+    // separate windows, so follow their ownership chain across those boundaries.
+    for (QWidget *owner = activeWindow ? activeWindow->parentWidget() : nullptr;
+         owner && currentWindow; owner = owner->parentWidget()) {
+        if (owner == currentWindow) {
+            ownedDialogActive = true;
+            break;
+        }
+    }
     return isVisible() && currentWindow && !currentWindow->isMinimized()
         && ((!m_windowDeactivated && currentWindow->isActiveWindow()) || ownedDialogActive);
+}
+
+bool AeroSurface::synchronizeBackgroundActivity()
+{
+    updateAnimationState();
+    return m_backgroundActive;
+}
+
+void AeroSurface::scheduleBackgroundActivitySync()
+{
+    if (m_backgroundActivitySyncPending)
+        return;
+    m_backgroundActivitySyncPending = true;
+    QTimer::singleShot(0, this, [this] {
+        m_backgroundActivitySyncPending = false;
+        synchronizeBackgroundActivity();
+    });
 }
 
 void AeroSurface::advanceWater()
@@ -684,7 +717,7 @@ bool AeroSurface::event(QEvent *event)
         // Qt may update activeWindow only after dispatching deactivation.
         // Recheck an owned settings dialog after this event, while preserving
         // the explicit deactivated state of the application window.
-        QTimer::singleShot(0, this, [this] { updateAnimationState(); });
+        scheduleBackgroundActivitySync();
         break;
     case QEvent::Show:
     case QEvent::ParentChange:
@@ -714,7 +747,7 @@ bool AeroSurface::eventFilter(QObject *watched, QEvent *event)
         if (event->type() == QEvent::WindowDeactivate) {
             m_windowDeactivated = true;
             updateAnimationState();
-            QTimer::singleShot(0, this, [this] { updateAnimationState(); });
+            scheduleBackgroundActivitySync();
         } else if (event->type() == QEvent::WindowActivate) {
             m_windowDeactivated = false;
             updateAnimationState();

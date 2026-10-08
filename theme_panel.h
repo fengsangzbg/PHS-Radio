@@ -16,7 +16,9 @@ public:
     explicit ThemePanel(QWidget *parent = nullptr);
     void setTheme(const BackgroundTheme &theme);
     BackgroundTheme theme() const;
+    void setWallpaperStatus(const QString &status);
     std::function<void(const BackgroundTheme &)> onThemeSelected;
+    std::function<QString()> diagnosticsProvider;
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -27,6 +29,7 @@ private:
     QComboBox *m_wallpapers;
     QLabel *m_current;
     QLabel *m_libraryStatus;
+    QLabel *m_wallpaperStatus;
     QSlider *m_dimming;
     QLabel *m_engineFrameRate;
     JellyButton *m_engineSettings;

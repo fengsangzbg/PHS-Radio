@@ -20,6 +20,7 @@
 #include "background_theme.h"
 #include "theme_panel.h"
 #include "wallpaper_engine_capture.h"
+#include "native_window_capture.h"
 #include "glass_title_bar.h"
 #include "release_config.h"
 #include "update_panel.h"
@@ -448,8 +449,16 @@ public:
             m_wallpaperCapture->setRenderSize(wallpaperRenderPixels(m_surface));
         });
         m_wallpaperCapture->onFrame = [this](const QImage &frame) { m_surface->setBackgroundFrame(frame); };
-        m_wallpaperCapture->onStatusChanged = [this](const QString &status) { statusBar()->showMessage(status, 5000); };
-        m_wallpaperCapture->onError = [this](const QString &error) { statusBar()->showMessage(error, 10000); };
+        m_wallpaperCapture->onStatusChanged = [this](const QString &status) {
+            statusBar()->showMessage(status, 5000);
+            if (m_activeThemePanel)
+                m_activeThemePanel->setWallpaperStatus(status);
+        };
+        m_wallpaperCapture->onError = [this](const QString &error) {
+            statusBar()->showMessage(error, 10000);
+            if (m_activeThemePanel)
+                m_activeThemePanel->setWallpaperStatus(error);
+        };
         m_surface->onBackgroundError = [this](const QString &error) { statusBar()->showMessage(error, 10000); };
         m_surface->onBackgroundActivityChanged = [this](bool active) {
             m_wallpaperCapture->setPaused(!active);
@@ -1085,9 +1094,16 @@ private:
         m_dock->setInteractionHeld(true);
         ThemePanel panel(this);
         panel.setTheme(m_surface->backgroundTheme());
+        panel.setWallpaperStatus(m_wallpaperCapture->statusText());
+        panel.diagnosticsProvider = [this] { return m_wallpaperCapture->diagnosticReport(); };
         panel.onThemeSelected = [this](const BackgroundTheme &theme) { applyBackgroundTheme(theme); };
+        m_activeThemePanel = &panel;
         panel.exec();
+        m_activeThemePanel.clear();
         m_dock->setInteractionHeld(false);
+        QTimer::singleShot(0, this, [this] {
+            m_wallpaperCapture->setPaused(!m_surface->synchronizeBackgroundActivity());
+        });
     }
 
     void applyBackgroundTheme(const BackgroundTheme &theme)
@@ -1107,7 +1123,7 @@ private:
             m_wallpaperCapture->start(theme.engineExecutable, theme.sourcePath,
                                       wallpaperRenderPixels(m_surface));
         m_wallpaperCapture->setFrameRate(Aero::displayRefreshRate(m_surface));
-        m_wallpaperCapture->setPaused(!m_surface->backgroundIsActive());
+        m_wallpaperCapture->setPaused(!m_surface->synchronizeBackgroundActivity());
         QSettings appearance;
         saveBackgroundTheme(appearance, theme);
     }
@@ -2282,6 +2298,7 @@ private:
     SongPage *m_songPage = nullptr;
     QWidget *m_previousContentPage = nullptr;
     WallpaperEngineCapture *m_wallpaperCapture = nullptr;
+    QPointer<ThemePanel> m_activeThemePanel;
     QTimer m_wallpaperResizeTimer;
     QHash<int, QVector<Track>> m_dailyTracks;
     QHash<int, int> m_recommendationRequests;
@@ -2372,6 +2389,10 @@ private:
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [] {
+        if (!NativeWindowCapture::shutdownWorkers(1000))
+            qWarning("Native wallpaper capture did not finish within the shutdown deadline.");
+    });
     const QStringList arguments = QCoreApplication::arguments();
     const int mediaArgument = arguments.indexOf(QStringLiteral("--smoke-media"));
     const bool smokeMode = arguments.contains(QStringLiteral("--smoke-test")) || mediaArgument >= 0;
