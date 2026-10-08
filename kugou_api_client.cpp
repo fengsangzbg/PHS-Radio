@@ -9,6 +9,8 @@
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QNetworkReply>
+#include <QNetworkCookie>
+#include <QNetworkCookieJar>
 #include <QNetworkRequest>
 #include <QProcessEnvironment>
 #include <QSettings>
@@ -40,6 +42,96 @@ QString apiBaseUrl()
 {
     return QStringLiteral("http://127.0.0.1:3737");
 }
+
+// Only the bridge's platform identity is shared and persisted. Account cookies
+// and dfid stay out of the jar: credentials use DPAPI and explicit Authorization,
+// and a registration is valid only for the current account session.
+class KugouDeviceCookieJar final : public QNetworkCookieJar {
+public:
+    explicit KugouDeviceCookieJar(QObject *parent) : QNetworkCookieJar(parent)
+    {
+        QSettings settings;
+        const QVariantMap stored = settings.value(settingsKey()).toMap();
+        const QUrl origin(apiBaseUrl());
+        QList<QNetworkCookie> cookies;
+        for (auto it = stored.cbegin(); it != stored.cend(); ++it) {
+            const QByteArray name = it.key().toLatin1();
+            const QByteArray value = it.value().toString().toLatin1();
+            if (allowedName(name) && validValue(value))
+                cookies.push_back(QNetworkCookie(name, value));
+        }
+        // A partial GUID/MID pair must not be combined with a newly generated
+        // server identity. The first bridge response supplies the full profile.
+        if (completeProfile(cookies))
+            QNetworkCookieJar::setCookiesFromUrl(cookies, origin);
+    }
+
+    bool setCookiesFromUrl(const QList<QNetworkCookie> &cookies, const QUrl &url) override
+    {
+        const QUrl origin(apiBaseUrl());
+        if (url.scheme() != origin.scheme() || url.host() != origin.host()
+            || url.port() != origin.port())
+            return false;
+        QList<QNetworkCookie> accepted;
+        const QList<QNetworkCookie> existing = cookiesForUrl(origin);
+        for (const QNetworkCookie &cookie : cookies) {
+            if (!allowedName(cookie.name()) || !validValue(cookie.value()))
+                continue;
+            // Concurrent responses must not rotate an established identity.
+            if (std::any_of(existing.cbegin(), existing.cend(), [&](const auto &saved) {
+                    return saved.name() == cookie.name();
+                }))
+                continue;
+            QNetworkCookie normalized(cookie.name(), cookie.value());
+            normalized.setPath(QStringLiteral("/"));
+            accepted.push_back(normalized);
+        }
+        // Adopt the core identity as one profile from one response. Otherwise
+        // a partial reply before a bridge restart could freeze an old GUID and
+        // combine it with a new server's MID/DEV on the next reply.
+        if (!completeProfile(existing) && !completeProfile(accepted))
+            return false;
+        const bool changed = !accepted.isEmpty()
+            && QNetworkCookieJar::setCookiesFromUrl(accepted, origin);
+        if (changed) {
+            const QList<QNetworkCookie> profile = cookiesForUrl(origin);
+            if (completeProfile(profile)) {
+                QVariantMap stored;
+                for (const QNetworkCookie &cookie : profile)
+                    stored.insert(QString::fromLatin1(cookie.name()), QString::fromLatin1(cookie.value()));
+                QSettings settings;
+                settings.setValue(settingsKey(), stored);
+            }
+        }
+        return changed;
+    }
+
+private:
+    static QString settingsKey() { return QStringLiteral("accounts/kugou/deviceCookies"); }
+    static bool allowedName(const QByteArray &name)
+    {
+        return name == "KUGOU_API_GUID" || name == "KUGOU_API_MID" || name == "KUGOU_API_DEV"
+            || name == "KUGOU_API_WEBGL" || name == "KUGOU_API_MAC" || name == "KUGOU_API_PLATFORM";
+    }
+    static bool validValue(const QByteArray &value)
+    {
+        return !value.isEmpty() && value.size() <= 256
+            && std::all_of(value.cbegin(), value.cend(), [](unsigned char ch) {
+                return ch > 32 && ch < 127 && ch != ';' && ch != ',';
+            });
+    }
+    static bool completeProfile(const QList<QNetworkCookie> &cookies)
+    {
+        for (const QByteArray &name : {QByteArray("KUGOU_API_GUID"), QByteArray("KUGOU_API_MID"),
+                                      QByteArray("KUGOU_API_DEV"), QByteArray("KUGOU_API_WEBGL")}) {
+            if (std::none_of(cookies.cbegin(), cookies.cend(), [&](const auto &cookie) {
+                    return cookie.name() == name;
+                }))
+                return false;
+        }
+        return true;
+    }
+};
 
 QString resolveKugouServiceRoot(const QString &applicationRoot, const QString &developmentRoot)
 {
@@ -90,6 +182,42 @@ QString objectString(const QJsonObject &object, const QStringList &keys)
             return QString::number(value.toVariant().toLongLong());
     }
     return {};
+}
+
+QString apiFailureDetails(const QJsonObject &response, const QStringList &secrets)
+{
+    QString code = objectString(response, {QStringLiteral("error_code"), QStringLiteral("errcode"),
+                                          QStringLiteral("code")});
+    if (!code.isEmpty() && !QRegularExpression(QStringLiteral("^-?[0-9]{1,12}$")).match(code).hasMatch())
+        code = QStringLiteral("未知");
+    const QStringList messageKeys{QStringLiteral("errmsg"), QStringLiteral("error_msg"),
+                                  QStringLiteral("msg"), QStringLiteral("message")};
+    QString message = objectString(response.value(QStringLiteral("data")).toObject(), messageKeys);
+    if (message.isEmpty())
+        message = objectString(response, messageKeys);
+    // Never dump response objects, request headers or credentials into the UI.
+    for (const QString &secret : secrets) {
+        if (secret.size() >= 4)
+            message.replace(secret, QStringLiteral("[已隐藏]"));
+    }
+    message.replace(QRegularExpression(QStringLiteral(
+        "(?:token|userid|user_id|dfid|authorization|cookie|KUGOU_API_\\w+)\\s*[:=]\\s*[^\\s;,]+"),
+        QRegularExpression::CaseInsensitiveOption), QStringLiteral("[已隐藏]"));
+    message.replace(QRegularExpression(QStringLiteral("[\\x00-\\x1f\\x7f]")), QStringLiteral(" "));
+    message = message.simplified().left(200);
+    QString details;
+    if (!code.isEmpty())
+        details = QStringLiteral("（错误码 %1）").arg(code);
+    if (!message.isEmpty())
+        details += QStringLiteral("：%1").arg(message);
+    return details;
+}
+
+bool hasApiError(const QJsonObject &response)
+{
+    const QString code = objectString(response, {QStringLiteral("error_code"), QStringLiteral("errcode"),
+                                                 QStringLiteral("code")});
+    return !code.isEmpty() && code != QStringLiteral("0");
 }
 
 QUrl objectCoverUrl(const QJsonObject &object)
@@ -359,6 +487,13 @@ KugouApiClient::KugouApiClient(QObject *parent)
       m_serviceRoot(resolveKugouServiceRoot(QCoreApplication::applicationDirPath(),
                                           QString::fromUtf8(PHSRADIO_KUGOU_SERVICE_DIR)))
 {
+    auto *deviceCookies = new KugouDeviceCookieJar(this);
+    m_network.setCookieJar(deviceCookies);
+    m_playbackNetwork.setCookieJar(deviceCookies);
+    m_libraryNetwork.setCookieJar(deviceCookies);
+    // setCookieJar reparents the jar. Keep it owned by the client so that it
+    // outlives all three member managers (Qt's documented shared-jar pattern).
+    deviceCookies->setParent(this);
     m_qrTimer.setInterval(2000);
     connect(&m_qrTimer, &QTimer::timeout, this, [this] { pollQrStatus(); });
 #ifdef Q_OS_WIN
@@ -384,21 +519,41 @@ KugouApiClient::~KugouApiClient()
 
 void KugouApiClient::startQrLogin()
 {
+    const quint64 generation = ++m_qrGeneration;
     m_loginInProgress = true;
     m_qrKey.clear();
     m_qrTimer.stop();
     reportStatus(QStringLiteral("正在连接本机酷狗服务…"));
-    ensureService([this] { requestQrKey(); });
+    ensureService([this, generation] {
+        if (generation == m_qrGeneration && m_loginInProgress)
+            requestQrKey();
+    });
 }
 
 void KugouApiClient::restoreSession()
 {
     QSettings settings;
+    QString token;
+    QString userId;
     if (!unprotectSession(settings.value(QStringLiteral("accounts/kugou/session")).toString(),
-                          &m_token, &m_userId))
+                          &token, &userId))
         return;
-    m_authorization = QStringLiteral("token=%1;userid=%2").arg(m_token, m_userId);
+    setAccountSession(token, userId);
     ensureService([this] { requestUserPlaylists(); });
+}
+
+void KugouApiClient::setAccountSession(const QString &token, const QString &userId)
+{
+    ++m_accountGeneration;
+    m_token = token;
+    m_userId = userId;
+    m_authorization = token.isEmpty() || userId.isEmpty() ? QString()
+        : QStringLiteral("token=%1;userid=%2").arg(token, userId);
+    m_deviceId.clear();
+    auto waiters = std::move(m_deviceWaiters);
+    m_deviceWaiters.clear();
+    for (const auto &callback : waiters)
+        callback(QStringLiteral("酷狗账号已切换，请重新点击播放或搜索。"));
 }
 
 void KugouApiClient::fetchPlaylists()
@@ -601,9 +756,12 @@ void KugouApiClient::requestJson(const QString &path, const QJsonObject &body,
 
 void KugouApiClient::requestQrKey()
 {
+    const quint64 generation = m_qrGeneration;
     const QString path = QStringLiteral("/login/qr/key?timestamp=%1")
                              .arg(QDateTime::currentMSecsSinceEpoch());
-    requestJson(path, {}, {}, [this](const QJsonObject &response, const QString &error) {
+    requestJson(path, {}, {}, [this, generation](const QJsonObject &response, const QString &error) {
+        if (generation != m_qrGeneration || !m_loginInProgress)
+            return;
         if (!error.isEmpty()) {
             reportError(error);
             return;
@@ -620,12 +778,15 @@ void KugouApiClient::requestQrKey()
 
 void KugouApiClient::requestQrImage()
 {
+    const quint64 generation = m_qrGeneration;
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("key"), m_qrKey);
     query.addQueryItem(QStringLiteral("qrimg"), QStringLiteral("1"));
     query.addQueryItem(QStringLiteral("timestamp"), QString::number(QDateTime::currentMSecsSinceEpoch()));
     requestJson(QStringLiteral("/login/qr/create?") + query.toString(QUrl::FullyEncoded), {}, {},
-                [this](const QJsonObject &response, const QString &error) {
+                [this, generation](const QJsonObject &response, const QString &error) {
+        if (generation != m_qrGeneration || !m_loginInProgress)
+            return;
         if (!error.isEmpty()) {
             reportError(error);
             return;
@@ -650,11 +811,15 @@ void KugouApiClient::pollQrStatus()
 {
     if (!m_loginInProgress || m_qrKey.isEmpty())
         return;
+    const quint64 generation = m_qrGeneration;
+    const QString qrKey = m_qrKey;
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("key"), m_qrKey);
     query.addQueryItem(QStringLiteral("timestamp"), QString::number(QDateTime::currentMSecsSinceEpoch()));
     requestJson(QStringLiteral("/login/qr/check?") + query.toString(QUrl::FullyEncoded), {}, {},
-                [this](const QJsonObject &response, const QString &error) {
+                [this, generation, qrKey](const QJsonObject &response, const QString &error) {
+        if (generation != m_qrGeneration || !m_loginInProgress || qrKey != m_qrKey)
+            return;
         if (!error.isEmpty()) {
             reportStatus(QStringLiteral("二维码状态暂时无法读取，正在重试…"));
             return;
@@ -672,13 +837,13 @@ void KugouApiClient::pollQrStatus()
         } else if (status == 4) {
             m_qrTimer.stop();
             m_loginInProgress = false;
-            m_token = objectString(data, {QStringLiteral("token")});
-            m_userId = objectString(data, {QStringLiteral("userid"), QStringLiteral("user_id")});
-            if (m_token.isEmpty() || m_userId.isEmpty()) {
+            const QString token = objectString(data, {QStringLiteral("token")});
+            const QString userId = objectString(data, {QStringLiteral("userid"), QStringLiteral("user_id")});
+            if (token.isEmpty() || userId.isEmpty()) {
                 reportError(QStringLiteral("登录响应缺少 token 或用户 ID。"));
                 return;
             }
-            m_authorization = QStringLiteral("token=%1;userid=%2").arg(m_token, m_userId);
+            setAccountSession(token, userId);
             QSettings settings;
             const QString encrypted = protectedSession(m_token, m_userId);
             if (encrypted.isEmpty()) {
@@ -891,31 +1056,21 @@ void KugouApiClient::searchCatalog(const QString &query, int page, CatalogSearch
         return;
     }
     const QString authorization = m_authorization;
-    if (m_deviceId.isEmpty()) {
-        ensurePlaybackDevice([this, keywords, authorization, emptyPage,
-                              callback = std::move(callback)](const QString &error) {
-            if (authorization != m_authorization) {
-                callback(emptyPage, QStringLiteral("酷狗账号已切换，请重新搜索。"));
-                return;
-            }
-            if (!error.isEmpty()) {
-                callback(emptyPage, QStringLiteral("酷狗在线曲库搜索无法完成设备验证：%1").arg(error));
-                return;
-            }
-            searchCatalog(keywords, emptyPage.page, std::move(callback));
-        });
-        return;
-    }
+    const quint64 generation = m_accountGeneration;
+    const QString searchAuthorization = m_deviceId.isEmpty() ? authorization
+        : authorization + QStringLiteral(";dfid=%1").arg(m_deviceId);
     // module/search.js consumes "keywords", not "keyword", and defaults to 30.
     // It does not forward show_author_alias. The bridge accepts JSON parameters
     // and converts Authorization into cookie credentials required by /search.
+    // Let /search validate its own authenticated request. A playback registration
+    // failure must not prevent a separate search from reaching that endpoint.
     requestJson(QStringLiteral("/search"),
                 {{QStringLiteral("keywords"), keywords}, {QStringLiteral("type"), QStringLiteral("song")},
                  {QStringLiteral("page"), emptyPage.page}, {QStringLiteral("pagesize"), emptyPage.pageSize}},
-                authorization + QStringLiteral(";dfid=%1").arg(m_deviceId),
-                [this, authorization, emptyPage, callback = std::move(callback)]
+                searchAuthorization,
+                [this, authorization, generation, emptyPage, callback = std::move(callback)]
                 (const QJsonObject &response, const QString &error) {
-        if (authorization != m_authorization) {
+        if (generation != m_accountGeneration || authorization != m_authorization) {
             callback(emptyPage, QStringLiteral("酷狗账号已切换，请重新搜索。"));
             return;
         }
@@ -923,13 +1078,9 @@ void KugouApiClient::searchCatalog(const QString &query, int page, CatalogSearch
             callback(emptyPage, QStringLiteral("酷狗在线曲库搜索失败：%1").arg(error));
             return;
         }
-        if (response.value(QStringLiteral("status")).toVariant().toInt() != 1) {
-            const QString code = objectString(response, {QStringLiteral("error_code"), QStringLiteral("errcode")});
-            const QString reason = objectString(response, {QStringLiteral("error_msg"), QStringLiteral("errmsg"),
-                                                           QStringLiteral("message"), QStringLiteral("msg")});
-            callback(emptyPage, QStringLiteral("酷狗在线曲库搜索被拒绝（错误码 %1）%2")
-                .arg(code.isEmpty() ? QStringLiteral("未知") : code,
-                     reason.isEmpty() ? QString() : QStringLiteral("：") + reason));
+        if (response.value(QStringLiteral("status")).toVariant().toInt() != 1 || hasApiError(response)) {
+            callback(emptyPage, QStringLiteral("酷狗在线曲库搜索被拒绝%1")
+                .arg(apiFailureDetails(response, {m_token, m_userId, m_deviceId})));
             return;
         }
         if (!error.isEmpty()) {
@@ -1078,6 +1229,8 @@ void KugouApiClient::fetchAudioUrl(const Track &track, AudioCallback callback)
         callback({}, QStringLiteral("请先登录酷狗账号。"));
         return;
     }
+    const QString authorization = m_authorization;
+    const quint64 generation = m_accountGeneration;
     // A numeric song ID is not a file hash and cannot be passed as one.
     const QString hash = !track.hash.isEmpty() ? track.hash : track.id;
     if (hash.size() != 32 || std::any_of(hash.cbegin(), hash.cend(), [](QChar ch) {
@@ -1087,7 +1240,11 @@ void KugouApiClient::fetchAudioUrl(const Track &track, AudioCallback callback)
         return;
     }
     if (m_deviceId.isEmpty()) {
-        ensurePlaybackDevice([this, track, callback](const QString &error) {
+        ensurePlaybackDevice([this, track, callback, authorization, generation](const QString &error) {
+            if (generation != m_accountGeneration || authorization != m_authorization) {
+                callback({}, QStringLiteral("酷狗账号已切换，请重新点击播放。"));
+                return;
+            }
             if (!error.isEmpty()) {
                 callback({}, error);
                 return;
@@ -1102,15 +1259,22 @@ void KugouApiClient::fetchAudioUrl(const Track &track, AudioCallback callback)
     if (!track.albumAudioId.isEmpty())
         body.insert(QStringLiteral("album_audio_id"), track.albumAudioId);
     requestJson(QStringLiteral("/song/url"), body,
-                m_authorization + QStringLiteral(";dfid=%1").arg(m_deviceId),
-                [callback](const QJsonObject &response, const QString &error) {
-        if (!error.isEmpty()) {
-            callback({}, QStringLiteral("获取音源失败：%1").arg(error));
+                authorization + QStringLiteral(";dfid=%1").arg(m_deviceId),
+                [this, callback, authorization, generation](const QJsonObject &response, const QString &error) {
+        if (generation != m_accountGeneration || authorization != m_authorization) {
+            callback({}, QStringLiteral("酷狗账号已切换，请重新点击播放。"));
             return;
         }
-        if (response.contains(QStringLiteral("status"))
-            && response.value(QStringLiteral("status")).toVariant().toInt() == 0) {
-            callback({}, QStringLiteral("酷狗拒绝了播放请求，请检查账号权限或重新登录。"));
+        const QString details = apiFailureDetails(response, {m_token, m_userId, m_deviceId});
+        if (!error.isEmpty()) {
+            callback({}, details.isEmpty() ? QStringLiteral("获取音源失败：%1").arg(error)
+                                          : QStringLiteral("酷狗获取音源失败%1").arg(details));
+            return;
+        }
+        if ((response.contains(QStringLiteral("status"))
+             && response.value(QStringLiteral("status")).toVariant().toInt() == 0)
+            || hasApiError(response)) {
+            callback({}, QStringLiteral("酷狗拒绝了播放请求%1").arg(details));
             return;
         }
         QJsonObject data = response.value(QStringLiteral("data")).toObject();
@@ -1140,21 +1304,37 @@ void KugouApiClient::ensurePlaybackDevice(std::function<void(const QString &)> c
     }
     m_deviceWaiters.push_back(std::move(callback));
     if (m_deviceWaiters.size() == 1)
-        registerPlaybackDevice(1);
+        registerPlaybackDevice(1, m_accountGeneration);
 }
 
-void KugouApiClient::registerPlaybackDevice(int attempt)
+void KugouApiClient::registerPlaybackDevice(int attempt, quint64 generation)
 {
+    if (generation != m_accountGeneration || m_deviceWaiters.isEmpty())
+        return;
     const QString authorization = m_authorization;
     requestJson(QStringLiteral("/register/dev"), {}, authorization,
-        [this, attempt, authorization](const QJsonObject &response, const QString &error) {
+        [this, attempt, authorization, generation](const QJsonObject &response, const QString &error) {
+        // setAccountSession has already completed the old waiters. A late
+        // response must neither overwrite dfid nor drain the new account queue.
+        if (generation != m_accountGeneration)
+            return;
         const bool accountChanged = authorization != m_authorization;
-        const QString device = objectString(response.value(QStringLiteral("data")).toObject(),
-                                             {QStringLiteral("dfid")});
+        QString device = objectString(response.value(QStringLiteral("data")).toObject(),
+                                       {QStringLiteral("dfid")}).trimmed();
+        if (device == QStringLiteral("undefined") || device == QStringLiteral("null")
+            || device.contains(QRegularExpression(QStringLiteral("[\\s;\\x00-\\x1f\\x7f]"))))
+            device.clear();
         const bool accepted = response.value(QStringLiteral("status")).toVariant().toInt() == 1;
-        const bool success = !accountChanged && error.isEmpty() && accepted && !device.isEmpty();
-        if (!success && !accountChanged && attempt < 3) {
-            QTimer::singleShot(500 * attempt, this, [this, attempt] { registerPlaybackDevice(attempt + 1); });
+        const bool rejected = (response.contains(QStringLiteral("status")) && !accepted)
+            || hasApiError(response);
+        const bool success = !accountChanged && error.isEmpty() && accepted && !rejected && !device.isEmpty();
+        // A transport failure or incomplete success can be transient. Explicit
+        // API rejections (including 20010) should not be hammered with retries.
+        if (!success && !accountChanged && !rejected && attempt < 3) {
+            QTimer::singleShot(500 * attempt, this, [this, attempt, generation, authorization] {
+                if (generation == m_accountGeneration && authorization == m_authorization)
+                    registerPlaybackDevice(attempt + 1, generation);
+            });
             return;
         }
         if (success)
@@ -1163,13 +1343,16 @@ void KugouApiClient::registerPlaybackDevice(int attempt)
         if (!success) {
             if (accountChanged)
                 failure = QStringLiteral("账号已切换，请重新点击播放。" );
+            else if (rejected)
+                failure = QStringLiteral("酷狗设备注册被拒绝%1。")
+                    .arg(apiFailureDetails(response, {m_token, m_userId, m_deviceId}));
             else if (!error.isEmpty())
                 failure = QStringLiteral("播放设备验证失败：%1").arg(error);
             else if (accepted)
                 failure = QStringLiteral("酷狗设备验证缺少设备标识，已自动重试三次，请重新点击播放。" );
             else
-                failure = QStringLiteral("酷狗设备验证被拒绝（错误码 %1），请重新登录。")
-                    .arg(response.value(QStringLiteral("error_code")).toVariant().toInt());
+                failure = QStringLiteral("酷狗设备注册返回了无法识别的结果%1，请稍后重试。")
+                    .arg(apiFailureDetails(response, {m_token, m_userId, m_deviceId}));
         }
         auto waiters = std::move(m_deviceWaiters);
         m_deviceWaiters.clear();

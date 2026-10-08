@@ -46,6 +46,9 @@ public:
 
 private:
     void findWindow();
+    bool captureWindowReady();
+    void resetCaptureCandidate();
+    void handleCaptureError(int error, const QString &detail);
     void publishFrame();
     void startRgbConversion(const QVideoFrame &frame);
     void resetConvertedFrames();
@@ -78,6 +81,12 @@ private:
     quintptr m_nativeWindow = 0;
     quintptr m_ownerWindow = 0;
     quintptr m_hiddenOwner = 0;
+    quintptr m_candidateWindow = 0;
+    QSize m_candidateSize;
+    int m_candidateStablePolls = 0;
+    quint64 m_captureGeneration = 0;
+    int m_captureRecoveryAttempts = 0;
+    bool m_captureErrorPending = false;
     bool m_requested = false;
     bool m_paused = false;
     bool m_announced = false;

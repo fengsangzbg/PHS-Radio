@@ -50,8 +50,9 @@ private:
     void requestQrKey();
     void requestQrImage();
     void pollQrStatus();
+    void setAccountSession(const QString &token, const QString &userId);
     void ensurePlaybackDevice(std::function<void(const QString &)> callback);
-    void registerPlaybackDevice(int attempt);
+    void registerPlaybackDevice(int attempt, quint64 generation);
     void requestUserPlaylists(int page = 1, QVector<Playlist> accumulated = {});
     void fetchPlaylistCandidate(Playlist playlist, int candidate, QVector<Track> best,
                                 TracksCallback callback);
@@ -74,6 +75,8 @@ private:
     QString m_userId;
     QString m_authorization;
     QString m_deviceId;
+    quint64 m_accountGeneration = 0;
+    quint64 m_qrGeneration = 0;
     bool m_serviceStartedByApp = false;
     bool m_loginInProgress = false;
 };

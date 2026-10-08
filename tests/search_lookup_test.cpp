@@ -2,6 +2,7 @@
 #include <QtGui>
 #include <QtNetwork>
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <memory>
 #define private public
@@ -131,6 +132,9 @@ int main(int argc, char **argv)
 
     int deviceRequests = 0, searchRequests = 0, catalogRequests = 0;
     bool rejectDevice = false;
+    bool expectDeviceIdentity = true;
+    std::array<int, 13> catalogCallbacks{};
+    KugouApiClient client;
     QSet<QString> requestIds;
     QObject::connect(&server, &QTcpServer::newConnection, &app, [&] {
         while (server.hasPendingConnections()) {
@@ -171,8 +175,9 @@ int main(int argc, char **argv)
                 } else {
                     check(url.path() == "/search", "Name lookup must call the documented search route.");
                     check(header.startsWith("POST "), "Bridge search parameters must be JSON request data.");
-                    check(header.contains(";dfid=fixture-device"),
-                          "Name lookup must carry the registered device identity.");
+                    check(expectDeviceIdentity ? header.contains(";dfid=fixture-device")
+                                               : !header.contains(";dfid="),
+                          "Search must forward an existing real dfid, and omit it when no device has registered.");
                     const QJsonObject body = QJsonDocument::fromJson(bytes->mid(boundary + 4, length)).object();
                     const bool catalog = body.value("keywords").toString() == QStringLiteral("在线 曲库");
                     check((catalog || body.value("keywords").toString() == QStringLiteral("名称 补全"))
@@ -190,7 +195,9 @@ int main(int argc, char **argv)
                         check(body.value("page").toInt() == expectedPage,
                               "Catalog pagination must forward the requested page instead of repeating page one.");
                         if (scenario == 7) {
-                            response = {{"status", 0}, {"error_code", 152}, {"error_msg", "Rejected"},
+                            // Some upstream errors carry a success-looking
+                            // status and song rows; the explicit code still wins.
+                            response = {{"status", 1}, {"error_code", 152}, {"error_msg", "Rejected"},
                                         {"data", QJsonObject{{"info", catalogSongs(1, expectedPage)}}}};
                         } else if (scenario == 8) {
                             status = "503 Service Unavailable";
@@ -205,10 +212,21 @@ int main(int argc, char **argv)
                                 data.insert("total", scenario == 3 ? QJsonValue(0) : QJsonValue("61"));
                             response = {{"status", 1}, {"data", data}};
                         }
+                        if (scenario == 12) {
+                            // The old HTTP request has arrived, but its response
+                            // has not been sent. Identical credentials from a new
+                            // QR confirmation still represent a different session.
+                            const quint64 generation = client.m_accountGeneration;
+                            const QString authorization = client.m_authorization;
+                            client.setAccountSession(QStringLiteral("fixture"), QStringLiteral("1"));
+                            check(client.m_accountGeneration != generation
+                                      && client.m_authorization == authorization,
+                                  "The in-flight replacement fixture must change generation while retaining identical credentials.");
+                        }
                     } else if (scenario == 1) {
                         response = {{"status", 1}, {"data", QJsonObject{{"info", QJsonArray{}}}}};
                     } else if (scenario == 2) {
-                        response = {{"status", 0}, {"error_code", 152}, {"error_msg", "Rejected"},
+                        response = {{"status", 1}, {"error_code", 152}, {"error_msg", "Rejected"},
                                     {"data", QJsonObject{{"info", QJsonArray{searchSong()}}}}};
                     } else if (scenario == 3) {
                         status = "503 Service Unavailable";
@@ -229,7 +247,6 @@ int main(int argc, char **argv)
         }
     });
 
-    KugouApiClient client;
     const QNetworkProxy mock(QNetworkProxy::HttpProxy, "127.0.0.1", server.serverPort());
     client.m_libraryNetwork.setProxy(mock);
     client.m_playbackNetwork.setProxy(mock);
@@ -260,19 +277,27 @@ int main(int argc, char **argv)
               && deviceRequests == 0 && searchRequests == 0 && catalogRequests == 0,
           "Empty and unauthorized input must not register devices or issue searches.");
     client.m_authorization = "token=fixture;userid=1";
+    // This is a known fixture identity, never a generated replacement. Later
+    // scenarios exercise search independently with no registered device.
+    client.m_deviceId = QStringLiteral("fixture-device");
     const PlaylistSnapshotProvider catalogProvider(MusicPlatform::Kugou, {}, &client);
     std::function<void(int)> runCatalogScenario;
     runCatalogScenario = [&](int scenario) {
         client.m_authorization = "token=fixture;userid=1";
         if (scenario == 11 || scenario == 12) {
             client.m_deviceId.clear();
+            expectDeviceIdentity = false;
             rejectDevice = scenario == 11;
         }
+        if (scenario == 12)
+            client.setAccountSession(QStringLiteral("fixture"), QStringLiteral("1"));
         const int requestedPage = scenario == 0 ? 0 : scenario == 3 ? 1
             : scenario == 2 || scenario == 5 ? 3 : 2;
         const int expectedPage = qMax(1, requestedPage);
         catalogProvider.searchCatalog(QStringLiteral("  在线 曲库  "), requestedPage,
                                       [&, scenario, expectedPage](const CatalogSearchPage &page, const QString &error) {
+            check(++catalogCallbacks[scenario] == 1,
+                  "Each catalog request must finish exactly once, including obsolete session results.");
             check(page.page == expectedPage && page.pageSize == 30,
                   "Every catalog callback, including errors, must preserve its normalized pagination metadata.");
             if (scenario <= 6) {
@@ -294,22 +319,29 @@ int main(int argc, char **argv)
             } else if (scenario == 9) {
                 check(page.tracks.isEmpty() && !error.isEmpty(), "Malformed catalog data must fail explicitly.");
             } else if (scenario == 11) {
-                check(page.tracks.isEmpty() && !error.isEmpty() && error.contains(QStringLiteral("设备验证"))
-                          && deviceRequests == 4 && catalogRequests == 11,
-                      "Failed device verification must exhaust its existing retries without issuing a catalog search.");
+                check(error.isEmpty() && page.tracks.size() == 30 && page.total == 61 && page.hasMore
+                          && deviceRequests == 0 && catalogRequests == 12 && client.m_deviceId.isEmpty(),
+                      "An authenticated catalog must use valid search results independently of rejected device registration.");
             } else {
                 check(page.tracks.isEmpty() && !page.hasMore && error.contains(QStringLiteral("账号已切换")),
-                      "Account changes during search or device validation must discard previous-account results.");
+                      "Account or session changes during search must discard obsolete results.");
                 if (scenario == 12) {
-                    check(deviceRequests == 5 && catalogRequests == 11 && searchRequests == 6,
-                          "An account change during registration must complete once without searching as the new account.");
-                    app.quit();
+                    check(deviceRequests == 0 && catalogRequests == 13 && searchRequests == 6
+                              && client.m_deviceId.isEmpty(),
+                          "Replacing identical credentials during search must finish once without registering or issuing a replacement query.");
+                    QTimer::singleShot(100, &app, [&] {
+                        check(deviceRequests == 0 && catalogRequests == 13 && searchRequests == 6
+                                  && std::all_of(catalogCallbacks.cbegin(), catalogCallbacks.cend(),
+                                                 [](int count) { return count == 1; }),
+                              "Late events must not repeat any callback, register a device, or reissue an obsolete catalog search.");
+                        app.quit();
+                    });
                     return;
                 }
             }
             runCatalogScenario(scenario + 1);
         });
-        if (scenario == 10 || scenario == 12)
+        if (scenario == 10)
             client.m_authorization = "token=changed;userid=2";
     };
     std::function<void(int)> runScenario;
@@ -317,7 +349,7 @@ int main(int argc, char **argv)
         client.searchTrackNames(QStringLiteral("  名称 补全  "), [&, scenario](const QVector<Track> &tracks, const QString &error) {
             if (scenario == 0) {
                 check(error.isEmpty() && tracks.size() == 1 && tracks.first().albumAudioId == "987654",
-                      "Name lookup must return parsed exact identifiers after device registration.");
+                      "Name lookup must return exact parsed identifiers while forwarding an existing device identity.");
             } else if (scenario == 1) {
                 check(error.isEmpty() && tracks.isEmpty(), "A valid empty search must remain a successful empty result.");
             } else if (scenario == 2) {
@@ -331,8 +363,8 @@ int main(int argc, char **argv)
             } else {
                 check(tracks.isEmpty() && error.contains(QStringLiteral("账号已切换")),
                       "A late result must not survive an account change.");
-                check(deviceRequests == 1 && searchRequests == 6,
-                      "The registered identity must be reused and each lookup must complete once.");
+                check(deviceRequests == 0 && searchRequests == 6,
+                      "The existing identity must be reused without registration, and each lookup must complete once.");
                 runCatalogScenario(0);
                 return;
             }

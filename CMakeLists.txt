@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(PHSRadio VERSION 0.2.3 LANGUAGES CXX)
 
-set(PHSRADIO_PRERELEASE "beta" CACHE STRING "Prerelease suffix; empty for a stable build")
+set(PHSRADIO_PRERELEASE "" CACHE STRING "Prerelease suffix; empty for a stable build")
 set(PHSRADIO_VERSION_STRING "${PROJECT_VERSION}")
 set(PHSRADIO_VERSION_FLAGS "0")
 if(PHSRADIO_PRERELEASE)

@@ -81,6 +81,17 @@ bool isNamedRenderer(HWND window, const QString &name)
     GetWindowTextW(window, title, 256);
     return QString::fromWCharArray(title) == name;
 }
+
+bool rendererIsUsable(HWND window, const QString &name, QSize *size = nullptr)
+{
+    RECT bounds{};
+    if (!isNamedRenderer(window, name) || !IsWindowVisible(window) || IsIconic(window)
+        || !GetClientRect(window, &bounds) || bounds.right <= bounds.left || bounds.bottom <= bounds.top)
+        return false;
+    if (size)
+        *size = QSize(bounds.right - bounds.left, bounds.bottom - bounds.top);
+    return true;
+}
 #endif
 
 void removeMutedProject(const QString &directory)
@@ -271,8 +282,7 @@ WallpaperEngineCapture::WallpaperEngineCapture(QObject *parent) : QObject(parent
             Qt::DirectConnection);
     connect(m_capture, &QWindowCapture::errorOccurred, this,
             [this](QWindowCapture::Error error, const QString &detail) {
-        if (m_requested && error != QWindowCapture::NoError)
-            fail(QStringLiteral("无法读取 Wallpaper Engine 动态窗口：%1").arg(detail));
+        handleCaptureError(error, detail);
     });
     connect(m_command, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (m_requested && error == QProcess::FailedToStart)
@@ -390,19 +400,25 @@ void WallpaperEngineCapture::start(const QString &executable, const QString &pro
 
 void WallpaperEngineCapture::findWindow()
 {
-    if (!m_requested)
+    if (!m_requested || m_paused || m_captureErrorPending)
         return;
 #ifdef Q_OS_WIN
     // Launch offscreen, apply zero opacity before moving to a capture-capable
     // monitor, then enumerate. An offscreen cold start does not produce frames.
     const HWND renderer = FindWindowW(nullptr, reinterpret_cast<LPCWSTR>(m_windowName.utf16()));
-    if (!renderer)
+    // A titled HWND may precede the renderer's visible, non-zero swap chain.
+    // Do not resize an unready window into appearing ready for WGC.
+    if (!rendererIsUsable(renderer, m_windowName)) {
+        resetCaptureCandidate();
         return;
+    }
     if (!parkWindow()) {
         fail(QStringLiteral("无法隐藏 Wallpaper Engine 专属渲染窗口，已停止背景连接。"));
         return;
     }
 #endif
+    if (!captureWindowReady())
+        return;
     for (const auto &window : QWindowCapture::capturableWindows()) {
         if (window.isValid() && window.description() == m_windowName) {
             m_findTimer.stop();
@@ -415,6 +431,10 @@ void WallpaperEngineCapture::findWindow()
                 m_frames->reset(true);
                 m_capture->start();
             }
+            // start() can report an error synchronously. Recovery happens only
+            // after that stack unwinds; never rearm timers for the failed start.
+            if (!m_requested || m_captureErrorPending)
+                return;
             if (!m_paused) {
                 m_frameClock.start();
                 m_frameSchedule.reset(0);
@@ -428,6 +448,80 @@ void WallpaperEngineCapture::findWindow()
             return;
         }
     }
+}
+
+void WallpaperEngineCapture::resetCaptureCandidate()
+{
+    m_candidateWindow = 0;
+    m_candidateSize = {};
+    m_candidateStablePolls = 0;
+}
+
+bool WallpaperEngineCapture::captureWindowReady()
+{
+#ifdef Q_OS_WIN
+    const HWND renderer = FindWindowW(nullptr, reinterpret_cast<LPCWSTR>(m_windowName.utf16()));
+    QSize size;
+    if (!rendererIsUsable(renderer, m_windowName, &size)) {
+        resetCaptureCandidate();
+        return false;
+    }
+    const auto handle = reinterpret_cast<quintptr>(renderer);
+    if (handle == m_candidateWindow && size == m_candidateSize) {
+        m_candidateStablePolls = qMin(m_candidateStablePolls + 1, 3);
+    } else {
+        m_candidateWindow = handle;
+        m_candidateSize = size;
+        m_candidateStablePolls = 1;
+    }
+    // Three 120 ms discovery polls allow native style/size changes and slower
+    // wallpaper initialization to settle before the backend creates its item.
+    return m_candidateStablePolls >= 3;
+#else
+    return true;
+#endif
+}
+
+void WallpaperEngineCapture::handleCaptureError(int error, const QString &detail)
+{
+    if (!m_requested || m_paused || error == QWindowCapture::NoError || m_captureErrorPending)
+        return;
+    m_captureErrorPending = true;
+    const quint64 generation = m_captureGeneration;
+    const QString name = m_windowName;
+    const QString message = QStringLiteral("无法读取 Wallpaper Engine 动态窗口：%1").arg(detail);
+    // Qt may emit this while start() is still constructing its grabber. Stop
+    // and cleanup must run after that call returns, not re-enter the backend.
+    QTimer::singleShot(0, this, [this, generation, name, error, message] {
+        if (!m_requested || m_paused || generation != m_captureGeneration || name != m_windowName)
+            return;
+        const bool transient = error == QWindowCapture::CaptureFailed
+            || error == QWindowCapture::InternalError || error == QWindowCapture::NotFound;
+        if (!transient || m_captureRecoveryAttempts >= 3) {
+            fail(message);
+            return;
+        }
+        ++m_captureRecoveryAttempts;
+        m_findTimer.stop();
+        m_frameTimer.stop();
+        m_guardTimer.stop();
+        m_capture->stop();
+        drainSinkFrames();
+        resetConvertedFrames();
+        m_frames->reset(false);
+        resetCaptureCandidate();
+        // Preserve the original initialization deadline. A runtime failure
+        // gets one deadline shared by all recovery attempts, not one per retry.
+        if (!m_timeout.isActive())
+            m_timeout.start(18000);
+        QTimer::singleShot(300, this, [this, generation, name] {
+            if (!m_requested || m_paused || generation != m_captureGeneration || name != m_windowName)
+                return;
+            m_captureErrorPending = false;
+            m_frames->reset(true);
+            m_findTimer.start();
+        });
+    });
 }
 
 bool WallpaperEngineCapture::parkWindow()
@@ -496,7 +590,7 @@ bool WallpaperEngineCapture::parkWindow()
 
 void WallpaperEngineCapture::publishFrame()
 {
-    if (m_paused || !m_requested)
+    if (m_paused || !m_requested || m_captureErrorPending)
         return;
     const qint64 now = m_frameClock.isValid() ? m_frameClock.nsecsElapsed() : 0;
     if (!m_frameSchedule.advance(now)) {
@@ -576,15 +670,18 @@ void WallpaperEngineCapture::setPaused(bool paused)
         fail(QStringLiteral("无法保持本软件专属 Wallpaper Engine 窗口静音。"));
         return;
     }
+    ++m_captureGeneration;
+    m_captureErrorPending = false;
+    resetCaptureCandidate();
     m_paused = paused;
     resetConvertedFrames();
+    m_findTimer.stop();
+    m_frameTimer.stop();
+    m_guardTimer.stop();
+    m_capture->stop();
+    drainSinkFrames();
     m_frames->reset(m_requested && !paused);
-    if (paused) {
-        m_capture->stop();
-        drainSinkFrames();
-        m_frames->reset(false);
-    }
-    if (m_requested && !m_findTimer.isActive()) {
+    if (m_requested) {
 #ifdef Q_OS_WIN
         const HWND handle = reinterpret_cast<HWND>(m_nativeWindow);
         if (isNamedRenderer(handle, m_windowName)) {
@@ -599,18 +696,13 @@ void WallpaperEngineCapture::setPaused(bool paused)
             }
         }
 #endif
-        if (!paused)
-            m_capture->start();
     }
     if (paused) {
-        m_frameTimer.stop();
         m_timeout.stop();
     } else if (m_requested) {
-        m_frameClock.start();
-        m_frameSchedule.reset(0);
-        m_frameTimer.start(m_frameSchedule.delayMs(0));
-        if (!m_announced)
-            m_timeout.start(18000);
+        // Re-enumerate and wait for the resumed native surface to settle.
+        m_findTimer.start();
+        m_timeout.start(18000);
     }
 }
 
@@ -666,8 +758,12 @@ bool WallpaperEngineCapture::muteWallpaper()
 
 void WallpaperEngineCapture::stop()
 {
+    ++m_captureGeneration;
     m_requested = false;
     m_announced = false;
+    m_captureErrorPending = false;
+    m_captureRecoveryAttempts = 0;
+    resetCaptureCandidate();
     resetConvertedFrames();
     m_frames->reset(false);
     m_findTimer.stop();
@@ -717,6 +813,7 @@ void WallpaperEngineCapture::stop()
 void WallpaperEngineCapture::fail(const QString &message)
 {
     stop();
-    if (onError)
-        onError(message);
+    const auto callback = onError;
+    if (callback)
+        callback(message);
 }

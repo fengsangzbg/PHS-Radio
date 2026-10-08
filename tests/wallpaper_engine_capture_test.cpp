@@ -529,12 +529,12 @@ void descriptorTest()
 class NativeFixture final {
 public:
     HWND window = nullptr;
-    explicit NativeFixture(const QString &title)
+    explicit NativeFixture(const QString &title, QSize size = QSize(900, 600), bool visible = true)
     {
         const QPoint position = rendererParkingPosition();
         window = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC",
-            reinterpret_cast<LPCWSTR>(title.utf16()), WS_POPUP | WS_VISIBLE,
-            position.x(), position.y(), 900, 600, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+            reinterpret_cast<LPCWSTR>(title.utf16()), WS_POPUP | (visible ? WS_VISIBLE : 0),
+            position.x(), position.y(), size.width(), size.height(), nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         check(window != nullptr, "The owned offscreen native fixture must be created.");
     }
     ~NativeFixture() { if (IsWindow(window)) DestroyWindow(window); }
@@ -552,6 +552,222 @@ QSize nativeSize(HWND window)
     RECT bounds{};
     GetClientRect(window, &bounds);
     return QSize(bounds.right - bounds.left, bounds.bottom - bounds.top);
+}
+
+QString rendererFixtureName()
+{
+    return QStringLiteral("PHSRadioWallpaper_%1_%2")
+        .arg(QCoreApplication::applicationPid()).arg(QUuid::createUuid().toString(QUuid::Id128));
+}
+
+void captureReadinessTest()
+{
+    const QString name = rendererFixtureName();
+    NativeFixture renderer(name, QSize(0, 0));
+    NativeFixture unrelated(QStringLiteral("UnrelatedReadinessFixture_%1")
+        .arg(QCoreApplication::applicationPid()));
+    const QSize foreignSize = nativeSize(unrelated.window);
+    WallpaperEngineCapture capture;
+    capture.m_requested = true;
+    capture.m_windowName = name;
+    capture.m_nativeWindow = reinterpret_cast<quintptr>(renderer.window);
+    capture.m_renderSize = QSize(900, 600);
+    check(!capture.captureWindowReady() && !capture.captureWindowReady()
+              && nativeSize(renderer.window) == QSize(0, 0),
+          "Readiness must reject a newly created zero-size surface without resizing it into a false ready state.");
+    check(SetWindowPos(renderer.window, nullptr, 0, 0, 900, 600,
+              SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE),
+          "The owned readiness fixture must accept a valid surface size.");
+    check(!capture.captureWindowReady() && !capture.captureWindowReady() && capture.captureWindowReady(),
+          "A valid named surface must be stable for three discovery polls before it is captured.");
+    check(SetWindowPos(renderer.window, nullptr, 0, 0, 901, 601,
+              SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE),
+          "The owned readiness fixture must accept a renderer-initialization size change.");
+    check(!capture.captureWindowReady() && !capture.captureWindowReady() && capture.captureWindowReady(),
+          "A surface size change must restart readiness polling rather than inherit another size's stability.");
+
+    ShowWindow(renderer.window, SW_HIDE);
+    check(!capture.captureWindowReady() && !capture.captureWindowReady(),
+          "A hidden renderer must never be considered ready or be made visible by the readiness probe.");
+    ShowWindow(renderer.window, SW_SHOWNOACTIVATE);
+    ShowWindow(renderer.window, SW_MINIMIZE);
+    check(IsIconic(renderer.window) && !capture.captureWindowReady(),
+          "A minimized renderer must be rejected before Qt capture can receive an invalid surface.");
+    ShowWindow(renderer.window, SW_RESTORE);
+    check(!capture.captureWindowReady() && !capture.captureWindowReady() && capture.captureWindowReady(),
+          "Restoring a renderer must require new stable polls instead of using its pre-minimize candidate.");
+
+    ShowWindow(renderer.window, SW_HIDE);
+    capture.m_nativeWindow = reinterpret_cast<quintptr>(unrelated.window);
+    check(!capture.captureWindowReady() && !capture.m_capture->isActive(),
+          "A stale HWND must not capture an unrelated visible window while the exact named renderer is unready.");
+    capture.stop();
+    events(20);
+    check(IsWindow(unrelated.window) && IsWindowVisible(unrelated.window)
+              && nativeSize(unrelated.window) == foreignSize,
+          "Readiness teardown must leave every window outside this source's unique name intact.");
+}
+
+void prepareRecoveryFixture(WallpaperEngineCapture &capture, const QString &name, HWND window)
+{
+    // The renderer is deliberately hidden. Discovery can inspect only this
+    // test-owned HWND, but cannot start a real backend or external WE command.
+    capture.m_requested = true;
+    capture.m_windowName = name;
+    capture.m_nativeWindow = reinterpret_cast<quintptr>(window);
+    capture.m_renderSize = QSize(900, 600);
+    capture.m_timeout.start(18000);
+}
+
+void captureRecoveryTest()
+{
+    const QString name = rendererFixtureName();
+    NativeFixture renderer(name, QSize(900, 600), false);
+    NativeFixture unrelated(QStringLiteral("UnrelatedRecoveryFixture_%1")
+        .arg(QCoreApplication::applicationPid()));
+    const QSize foreignSize = nativeSize(unrelated.window);
+    WallpaperEngineCapture capture;
+    prepareRecoveryFixture(capture, name, renderer.window);
+    int errors = 0;
+    QString error;
+    capture.onError = [&](const QString &message) { ++errors; error = message; };
+    const int originalDeadline = capture.m_timeout.remainingTime();
+    const auto inject = [&](QWindowCapture::Error code) {
+        capture.m_capture->errorOccurred(code, QStringLiteral("Owned capture fixture: invalid argument"));
+    };
+    inject(QWindowCapture::CaptureFailed);
+    inject(QWindowCapture::InternalError);
+    check(capture.m_requested && capture.m_captureErrorPending && errors == 0
+              && IsWindow(renderer.window) && !capture.m_capture->isActive(),
+          "Synchronous Qt initialization errors must coalesce without closing the named renderer or reentering backend destruction.");
+    check(until([&] { return capture.m_captureRecoveryAttempts == 1 && !capture.m_captureErrorPending; }, 1800)
+              && capture.m_findTimer.isActive() && IsWindow(renderer.window) && errors == 0,
+          "Transient capture initialization failure must defer one rediscovery while retaining the owned renderer.");
+    check(capture.m_timeout.isActive() && capture.m_timeout.remainingTime() < originalDeadline,
+          "A delayed recovery must retain the original total startup deadline instead of extending it per attempt.");
+    for (int attempt = 2; attempt <= 3; ++attempt) {
+        inject(attempt == 2 ? QWindowCapture::InternalError : QWindowCapture::CaptureFailed);
+        check(until([&] { return capture.m_captureRecoveryAttempts == attempt && !capture.m_captureErrorPending; }, 1800)
+                  && capture.m_requested && errors == 0 && IsWindow(renderer.window),
+              "Each transient backend failure may perform only one further bounded deferred recovery.");
+    }
+    const int beforeExhaustion = capture.m_captureRecoveryAttempts;
+    inject(QWindowCapture::CaptureFailed);
+    check(errors == 0 && IsWindow(renderer.window),
+          "Even retry-budget exhaustion must defer terminal cleanup until the Qt error signal has unwound.");
+    check(until([&] { return errors == 1; }, 1800) && !capture.m_requested
+              && beforeExhaustion == 3 && !error.isEmpty()
+              && !capture.m_findTimer.isActive() && !capture.m_timeout.isActive(),
+          "Capture recovery must stop after three attempts and report one terminal error, never enter an unbounded retry loop.");
+    events(400);
+    check(errors == 1 && !capture.m_requested && !IsWindow(renderer.window) && IsWindow(unrelated.window)
+              && IsWindowVisible(unrelated.window) && nativeSize(unrelated.window) == foreignSize,
+          "Exhausted recovery must not resurrect its renderer or alter any unrelated desktop window.");
+
+    const QString deadlineName = rendererFixtureName();
+    NativeFixture deadlineRenderer(deadlineName, QSize(900, 600), false);
+    WallpaperEngineCapture deadline;
+    prepareRecoveryFixture(deadline, deadlineName, deadlineRenderer.window);
+    int deadlineErrors = 0;
+    deadline.onError = [&](const QString &) { ++deadlineErrors; };
+    deadline.m_timeout.start(40);
+    deadline.m_capture->errorOccurred(QWindowCapture::InternalError, QStringLiteral("Owned startup deadline fixture"));
+    check(until([&] { return deadlineErrors == 1; }, 900) && !deadline.m_requested,
+          "The total startup timeout must cancel a pending recovery rather than wait for or restart its retry delay.");
+    events(400);
+    check(deadlineErrors == 1 && !deadline.m_findTimer.isActive() && !deadline.m_capture->isActive()
+              && !IsWindow(deadlineRenderer.window),
+          "A recovery callback arriving after the total deadline must remain cancelled.");
+}
+
+void captureRecoveryCancellationTest()
+{
+    // Cancel once before backend cleanup and once while the longer rediscovery
+    // delay is pending. Both callbacks belong to the original source only.
+    for (int scenario = 0; scenario < 6; ++scenario) {
+        const int deferredStage = scenario / 3;
+        const int action = scenario % 3;
+        const QString name = rendererFixtureName();
+        NativeFixture renderer(name, QSize(900, 600), false);
+        const QString nextName = rendererFixtureName();
+        NativeFixture nextRenderer(nextName, QSize(900, 600), false);
+        WallpaperEngineCapture capture;
+        prepareRecoveryFixture(capture, name, renderer.window);
+        int errors = 0;
+        capture.onError = [&](const QString &) { ++errors; };
+        capture.m_capture->errorOccurred(QWindowCapture::CaptureFailed, QStringLiteral("Owned cancellation fixture"));
+        if (deferredStage) {
+            check(until([&] { return capture.m_captureRecoveryAttempts == 1; }, 200)
+                      && capture.m_captureErrorPending,
+                  "The cancellation fixture must reach deferred retry after its backend cleanup.");
+        } else {
+            check(capture.m_captureErrorPending && capture.m_captureRecoveryAttempts == 0,
+                  "The cancellation fixture must retain its queued cleanup until the error signal unwinds.");
+        }
+        const quint64 previousGeneration = capture.m_captureGeneration;
+        if (action == 0) {
+            capture.stop();
+        } else if (action == 1) {
+            capture.setPaused(true);
+        } else {
+            capture.stop();
+            prepareRecoveryFixture(capture, nextName, nextRenderer.window);
+        }
+        check(capture.m_captureGeneration != previousGeneration,
+              "Stop, pause and source replacement must invalidate every old deferred capture task.");
+        events(450);
+        check(errors == 0 && !capture.m_captureErrorPending && !capture.m_findTimer.isActive()
+                  && !capture.m_capture->isActive(),
+              "An obsolete retry must neither start capture, restart discovery nor report an error in a later source state.");
+        if (action == 1) {
+            check(capture.m_requested && capture.m_paused && !capture.m_timeout.isActive()
+                      && IsWindow(renderer.window) && !IsWindowVisible(renderer.window),
+                  "Pausing during recovery must retain the requested source while suspending its deadline and retries.");
+            capture.m_capture->errorOccurred(QWindowCapture::InternalError, QStringLiteral("Owned paused-source fixture"));
+            events(10);
+            check(errors == 0 && !capture.m_captureErrorPending,
+                  "Backend errors arriving while paused must not schedule source recovery.");
+        } else if (action == 2) {
+            check(capture.m_requested && capture.m_windowName == nextName && IsWindow(nextRenderer.window)
+                      && !IsWindow(renderer.window),
+                  "Cancelling the previous source's recovery must preserve the new named renderer.");
+        } else {
+            check(!capture.m_requested && !IsWindow(renderer.window),
+                  "A stopped source must close only its named renderer and remain stopped after its deferred retry deadline.");
+        }
+        capture.stop();
+    }
+
+    const QString name = rendererFixtureName();
+    NativeFixture unsupportedRenderer(name, QSize(900, 600), false);
+    WallpaperEngineCapture unsupported;
+    prepareRecoveryFixture(unsupported, name, unsupportedRenderer.window);
+    int errors = 0;
+    unsupported.onError = [&](const QString &) { ++errors; };
+    unsupported.m_capture->errorOccurred(QWindowCapture::CapturingNotSupported,
+        QStringLiteral("Owned unsupported-backend fixture"));
+    check(errors == 0 && unsupported.m_requested && IsWindow(unsupportedRenderer.window),
+          "An unsupported backend must defer cleanup even though it cannot be retried.");
+    check(until([&] { return errors == 1; }, 900) && !unsupported.m_requested
+              && !unsupported.m_findTimer.isActive(),
+          "Unsupported window capture must produce one terminal failure without scheduling rediscovery.");
+    events(400);
+    check(errors == 1 && !unsupported.m_capture->isActive() && !IsWindow(unsupportedRenderer.window),
+          "An unsupported backend must remain stopped after the transient-recovery delay.");
+
+    const QString lifetimeName = rendererFixtureName();
+    NativeFixture lifetimeRenderer(lifetimeName, QSize(900, 600), false);
+    auto *destroyed = new WallpaperEngineCapture;
+    QPointer<WallpaperEngineCapture> guard(destroyed);
+    prepareRecoveryFixture(*destroyed, lifetimeName, lifetimeRenderer.window);
+    int terminalCallbacks = 0;
+    destroyed->onError = [&](const QString &) { ++terminalCallbacks; delete destroyed; };
+    destroyed->m_capture->errorOccurred(QWindowCapture::CapturingNotSupported,
+        QStringLiteral("Owned callback lifetime fixture"));
+    check(until([&] { return guard.isNull(); }, 900) && terminalCallbacks == 1,
+          "A deferred terminal error callback may destroy capture without accessing its deleted backend afterward.");
+    events(400);
+    check(terminalCallbacks == 1, "Receiver destruction must cancel every pending deferred recovery callback.");
 }
 
 void nativeIsolationTest()
@@ -678,8 +894,12 @@ int main(int argc, char **argv)
 #ifdef Q_OS_WIN
         if (application.arguments().size() == 4 && application.arguments().at(1) == QStringLiteral("--live"))
             liveEngineTest(application.arguments().at(2), application.arguments().at(3));
-        else
+        else {
+            captureReadinessTest();
+            captureRecoveryTest();
+            captureRecoveryCancellationTest();
             nativeIsolationTest();
+        }
 #endif
         qInfo("Wallpaper Engine capture regressions passed.");
         return 0;

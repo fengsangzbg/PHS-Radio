@@ -6,7 +6,9 @@
 
 液态玻璃、水光、柔和发光与弹性回馈，让听歌界面也成为桌面的一部分。支持导入 **Wallpaper Engine 动态壁纸**，搭配自定义背景、主题色和遮暗程度，从复古到明亮，自由组合多种风格。
 
-[试用 0.2.3 beta](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.2.3-beta) · [下载 Windows 64 位稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest) · [查看发布记录](https://github.com/fengsangzbg/PHS-Radio/releases) · [反馈问题](https://github.com/fengsangzbg/PHS-Radio/issues)
+[下载 v0.2.3 正式版](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.2.3) · [下载 Windows 64 位最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest) · [查看发布记录](https://github.com/fengsangzbg/PHS-Radio/releases) · [反馈问题](https://github.com/fengsangzbg/PHS-Radio/issues)
+
+推荐新用户下载 **v0.2.3 正式版完整包**：保留 beta 系列的界面与性能改进，已包含酷狗设备身份保存、账号切换与搜索请求修复，无需另外下载或覆盖补丁。
 
 ## 可以做什么
 
@@ -25,14 +27,20 @@
 
 ## 安装与使用
 
-1. 到 [0.2.3 beta 发布页](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.2.3-beta) 下载 Windows x64 完整测试包；也可选择[最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest)。
+1. 到 [v0.2.3 正式版发布页](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.2.3) 下载 Windows x64 完整包；也可选择[最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest)。
 2. **完整解压**后双击 `PHSRadio.exe`。保留 DLL、Qt 插件、`runtime`、`services` 等全部文件；无需另装 Qt、Node.js 或 npm。
 3. 使用手机酷狗 App 扫描软件中的二维码，确认登录。
 4. 歌单会在后台逐步加载。未加载完整时可从歌单面板重试；双击歌曲即可播放。
 
-v0.2.1 首次升级需要下载新版完整包；从 v0.2.2 起，点击标题栏“更新”，有新版本时选择“下载并更新”。更新会正常退出播放器、替换应用文件并自动重启，保留账号和主题设置；下载或安装失败时保留或恢复旧版。请将便携包放在当前用户可写的文件夹。
+旧版用户先关闭播放器，再将新完整包解压到一个新文件夹，运行其中的 `PHSRadio.exe`；账号和主题设置仍保存在当前 Windows 用户下。无需再使用单独的设备验证测试补丁。
 
-当前更新按钮检查稳定版通道，不会自动安装 beta。试用 `0.2.3-beta` 请从上面的测试版发布页手动下载并完整解压。
+v0.2.3 会保存当前用户的酷狗设备身份，让登录、搜索和播放请求使用一致的设备信息；切换账号时清理旧设备状态并隔离过期响应。搜索直接请求在线曲库，不再先等待播放设备注册。7 项相关回归测试和便携包启动检查通过；用户反馈同一日本网络下的另一台电脑已恢复搜索与播放。其它设备的服务端拒绝仍需结合具体错误排查。
+
+同时改进 Wallpaper Engine 窗口初始化：等待窗口尺寸稳定再开始捕获，捕获暂时失败时有限重连并保留错误说明；停止、切换壁纸或暂停会取消旧任务。静音、透明与高清显示保持原有设置。本机使用真实 Wallpaper Engine 的捕获恢复检查及相关自动测试已通过；另一台电脑报告的捕获“参数错误”仍待复测，不能据此保证所有壁纸在所有设备上均可用。
+
+v0.2.1 首次升级需要手动下载新版完整包；v0.2.2 及之后的旧版和 0.2.3 beta 系列可通过稳定版通道升级至 v0.2.3 正式版：点击标题栏“更新”，有新版本时选择“下载并更新”。更新会正常退出播放器、替换应用文件并自动重启，保留账号和主题设置；下载或安装失败时保留或恢复旧版。请将便携包放在当前用户可写的文件夹。
+
+当前更新按钮检查稳定版通道，v0.2.3 正式版通过该通道提供；beta 版本的更新按钮也查询稳定版通道，可升级至正式版，不会自动安装 beta。
 
 账号凭据使用当前 Windows 用户的 DPAPI 加密保存。发布包不包含开发者账号、登录信息或导入的私人壁纸。
 
@@ -56,14 +64,14 @@ Dock 音量只控制软件内的音乐，不改变 Windows 主音量；背景继
 cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPHSRADIO_KUGOU_ONLY=ON
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.3-beta
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.3
 ```
 
 本机服务源码与依赖锁位于 `services/kugou`，开发或重新打包前运行 `npm ci --prefix services/kugou --omit=dev --ignore-scripts`。服务只监听本机 `127.0.0.1:3737`。
 
 `PHSRADIO_KUGOU_ONLY=ON` 生成仅开放酷狗的发布版。未开放平台的开发代码保留在仓库，测试不会使用真实账号。更多实现细节见 [开发说明](docs/development.md)。
 
-默认构建版本为 `0.2.3-beta`。正式构建需显式传入 `-DPHSRADIO_PRERELEASE=`，并以相同版本号打包。Beta 版的更新检查仍查询正式 Release，可正常升级到后续正式版本。
+默认构建与打包版本为正式版 `0.2.3`。如需构建 beta，显式传入 `-DPHSRADIO_PRERELEASE=beta.N`（将 `N` 替换为序号），并以相同的 `0.2.3-beta.N` 版本号打包。已有 beta 构建目录转为正式版时，传入 `-DPHSRADIO_PRERELEASE=` 清空缓存中的预发布后缀。Beta 版的更新检查仍查询正式 Release，可正常升级到 v0.2.3 正式版及后续正式版本。
 
 ## 许可与依赖源码
 
