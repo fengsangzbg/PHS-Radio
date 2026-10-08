@@ -1,5 +1,16 @@
 cmake_minimum_required(VERSION 3.21)
-project(PHSRadio VERSION 0.2.2 LANGUAGES CXX)
+project(PHSRadio VERSION 0.2.3 LANGUAGES CXX)
+
+set(PHSRADIO_PRERELEASE "beta" CACHE STRING "Prerelease suffix; empty for a stable build")
+set(PHSRADIO_VERSION_STRING "${PROJECT_VERSION}")
+set(PHSRADIO_VERSION_FLAGS "0")
+if(PHSRADIO_PRERELEASE)
+    if(NOT PHSRADIO_PRERELEASE MATCHES "^beta(\\.[1-9][0-9]*)?$")
+        message(FATAL_ERROR "Unsupported prerelease suffix: ${PHSRADIO_PRERELEASE}")
+    endif()
+    string(APPEND PHSRADIO_VERSION_STRING "-${PHSRADIO_PRERELEASE}")
+    set(PHSRADIO_VERSION_FLAGS "VS_FF_PRERELEASE")
+endif()
 
 option(PHSRADIO_KUGOU_ONLY "Publish a release with only the Kugou platform enabled" OFF)
 
@@ -21,9 +32,15 @@ target_link_libraries(PlaybackQueue PUBLIC Qt6::Core)
 add_library(MusicLyrics STATIC lyric_domain.h lyrics.h lyrics.cpp)
 target_link_libraries(MusicLyrics PUBLIC Qt6::Core)
 
+add_library(CoverImages STATIC cover_image_decoder.h cover_image_decoder.cpp)
+target_link_libraries(CoverImages PUBLIC Qt6::Core Qt6::Gui)
+
+add_library(VideoFrameImages STATIC video_frame_image.h video_frame_image.cpp)
+target_link_libraries(VideoFrameImages PUBLIC Qt6::Gui Qt6::Multimedia)
+
 add_library(AppUpdates STATIC app_updater.h app_updater.cpp resources/updater.qrc)
 target_link_libraries(AppUpdates PUBLIC Qt6::Core Qt6::Network)
-target_compile_definitions(AppUpdates PRIVATE PHSRADIO_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(AppUpdates PRIVATE PHSRADIO_VERSION="${PHSRADIO_VERSION_STRING}")
 if(MINGW)
     # moc's stdio path conversion in this toolchain rejects absolute Chinese
     # paths. Relative filenames preserve Unicode workspaces without changing
@@ -47,15 +64,18 @@ add_library(AeroWidgets STATIC
     aero_widgets.h aero_widgets.cpp aero_surface.h aero_surface.cpp
     aero_animation.h aero_animation.cpp meteor_effect.h meteor_effect.cpp
     liquid_backdrop.h liquid_backdrop.cpp
+    liquid_image_blur.h
     playlist_drawer.h playlist_drawer.cpp playback_dock.h playback_dock.cpp
     song_glass_delegate.h song_glass_delegate.cpp
+    smooth_scroll.h smooth_scroll.cpp
     catalog_search_panel.h catalog_search_panel.cpp
     home_page.h home_page.cpp song_page.h song_page.cpp
     background_theme.h background_theme.cpp theme_panel.h theme_panel.cpp
     wallpaper_engine_capture.h wallpaper_engine_capture.cpp
+    latest_video_frame.h
     glass_title_bar.h glass_title_bar.cpp
     resources/platforms.qrc resources/app.qrc)
-target_link_libraries(AeroWidgets PUBLIC Qt6::Widgets Qt6::Multimedia)
+target_link_libraries(AeroWidgets PUBLIC Qt6::Widgets Qt6::Multimedia PRIVATE VideoFrameImages)
 if(WIN32)
     target_link_libraries(AeroWidgets PRIVATE user32)
 endif()
@@ -82,7 +102,7 @@ qt_add_executable(PHSRadio WIN32
 target_compile_definitions(PHSRadio PRIVATE
     PHSRADIO_KUGOU_SERVICE_DIR="${CMAKE_SOURCE_DIR}/services/kugou"
     PHSRADIO_NETEASE_SERVICE_DIR="${CMAKE_SOURCE_DIR}/services/netease"
-    PHSRADIO_VERSION="${PROJECT_VERSION}"
+    PHSRADIO_VERSION="${PHSRADIO_VERSION_STRING}"
 )
 if(PHSRADIO_KUGOU_ONLY)
     target_compile_definitions(PHSRadio PRIVATE PHSRADIO_KUGOU_ONLY=1)
@@ -112,10 +132,26 @@ if(WIN32)
     endif()
 endif()
 
-target_link_libraries(PHSRadio PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue AeroWidgets UpdateWidgets crypt32)
+target_link_libraries(PHSRadio PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(VideoFrameImageTest tests/video_frame_image_test.cpp)
+    target_link_libraries(VideoFrameImageTest PRIVATE VideoFrameImages)
+    add_test(NAME video_frame_image COMMAND VideoFrameImageTest)
+    set_tests_properties(video_frame_image PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(CoverImageDecoderTest tests/cover_image_decoder_test.cpp)
+    target_link_libraries(CoverImageDecoderTest PRIVATE CoverImages)
+    add_test(NAME cover_image_decoder COMMAND CoverImageDecoderTest)
+    set_tests_properties(cover_image_decoder PROPERTIES TIMEOUT 15)
+    add_executable(LiquidBlurTest tests/liquid_blur_test.cpp)
+    target_link_libraries(LiquidBlurTest PRIVATE Qt6::Gui)
+    add_test(NAME liquid_blur COMMAND LiquidBlurTest)
+    set_tests_properties(liquid_blur PROPERTIES TIMEOUT 15)
+    add_executable(LatestVideoFrameTest tests/latest_video_frame_test.cpp)
+    target_link_libraries(LatestVideoFrameTest PRIVATE Qt6::Core Qt6::Multimedia)
+    add_test(NAME latest_video_frame COMMAND LatestVideoFrameTest)
+    set_tests_properties(latest_video_frame PROPERTIES TIMEOUT 10)
     add_executable(DeviceRegistrationTest tests/device_registration_test.cpp)
     target_link_libraries(DeviceRegistrationTest PRIVATE Qt6::Gui Qt6::Network MusicLyrics crypt32)
     add_test(NAME device_registration COMMAND DeviceRegistrationTest)
@@ -127,7 +163,7 @@ if(BUILD_TESTING)
     add_executable(LibraryViewTest tests/library_view_test.cpp
         mock_music_provider.cpp platform_login_page.cpp kugou_api_client.cpp playlist_snapshot_provider.cpp
         netease_api_client.cpp netease_music_provider.cpp)
-    target_link_libraries(LibraryViewTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue AeroWidgets UpdateWidgets crypt32)
+    target_link_libraries(LibraryViewTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
     add_test(NAME library_view COMMAND LibraryViewTest)
     set_tests_properties(library_view PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(MusicSearchTest tests/music_search_test.cpp)
@@ -145,7 +181,7 @@ if(BUILD_TESTING)
     add_executable(CatalogSearchIntegrationTest tests/catalog_search_integration_test.cpp
         mock_music_provider.cpp platform_login_page.cpp kugou_api_client.cpp playlist_snapshot_provider.cpp
         netease_api_client.cpp netease_music_provider.cpp)
-    target_link_libraries(CatalogSearchIntegrationTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue AeroWidgets UpdateWidgets crypt32)
+    target_link_libraries(CatalogSearchIntegrationTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
     add_test(NAME catalog_search_integration COMMAND CatalogSearchIntegrationTest)
     set_tests_properties(catalog_search_integration PROPERTIES TIMEOUT 25 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(PlaybackQueueTest tests/playback_queue_test.cpp)
@@ -159,11 +195,11 @@ if(BUILD_TESTING)
     add_executable(SongGlassTest tests/song_glass_test.cpp)
     target_link_libraries(SongGlassTest PRIVATE AeroWidgets)
     add_test(NAME song_glass COMMAND SongGlassTest)
-    set_tests_properties(song_glass PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(song_glass PROPERTIES TIMEOUT 25 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(PlaybackIntegrationTest tests/playback_integration_test.cpp
         mock_music_provider.cpp platform_login_page.cpp kugou_api_client.cpp playlist_snapshot_provider.cpp
         netease_api_client.cpp netease_music_provider.cpp)
-    target_link_libraries(PlaybackIntegrationTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue AeroWidgets UpdateWidgets crypt32)
+    target_link_libraries(PlaybackIntegrationTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
     add_test(NAME playback_integration COMMAND PlaybackIntegrationTest)
     set_tests_properties(playback_integration PROPERTIES TIMEOUT 40 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(LiquidBackdropTest tests/liquid_backdrop_test.cpp)
@@ -187,7 +223,7 @@ if(BUILD_TESTING)
     add_test(NAME background_surface COMMAND BackgroundSurfaceTest)
     set_tests_properties(background_surface PROPERTIES TIMEOUT 20 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(WallpaperEngineCaptureTest tests/wallpaper_engine_capture_test.cpp)
-    target_link_libraries(WallpaperEngineCaptureTest PRIVATE Qt6::Widgets Qt6::Multimedia)
+    target_link_libraries(WallpaperEngineCaptureTest PRIVATE AeroWidgets)
     if(WIN32)
         target_link_libraries(WallpaperEngineCaptureTest PRIVATE user32)
     endif()
@@ -200,14 +236,14 @@ if(BUILD_TESTING)
     add_executable(HomeIntegrationTest tests/home_integration_test.cpp
         mock_music_provider.cpp platform_login_page.cpp kugou_api_client.cpp playlist_snapshot_provider.cpp
         netease_api_client.cpp netease_music_provider.cpp)
-    target_link_libraries(HomeIntegrationTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue AeroWidgets UpdateWidgets crypt32)
+    target_link_libraries(HomeIntegrationTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
     add_test(NAME home_integration COMMAND HomeIntegrationTest)
     set_tests_properties(home_integration PROPERTIES TIMEOUT 25 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(ReleasePlatformGateTest tests/release_platform_gate_test.cpp
         mock_music_provider.cpp platform_login_page.cpp kugou_api_client.cpp playlist_snapshot_provider.cpp
         netease_api_client.cpp netease_music_provider.cpp)
     target_compile_definitions(ReleasePlatformGateTest PRIVATE PHSRADIO_KUGOU_ONLY=1)
-    target_link_libraries(ReleasePlatformGateTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue AeroWidgets UpdateWidgets crypt32)
+    target_link_libraries(ReleasePlatformGateTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
     add_test(NAME release_platform_gate COMMAND ReleasePlatformGateTest)
     set_tests_properties(release_platform_gate PROPERTIES TIMEOUT 15 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(LyricsTest tests/lyrics_test.cpp)

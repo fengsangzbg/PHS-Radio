@@ -2,6 +2,7 @@
 
 #include "aero_widgets.h"
 #include "liquid_backdrop.h"
+#include "smooth_scroll.h"
 
 #include <QEasingCurve>
 #include <QIcon>
@@ -13,6 +14,7 @@
 #include <QTableWidget>
 #include <QTransform>
 #include <QVariantAnimation>
+#include <algorithm>
 #include <cmath>
 
 SongGlassDelegate::SongGlassDelegate(QTableWidget *table)
@@ -21,6 +23,8 @@ SongGlassDelegate::SongGlassDelegate(QTableWidget *table)
 {
     table->setMouseTracking(true);
     table->viewport()->installEventFilter(this);
+    m_scrollController = SmoothScrollController::attach(table);
+    m_motionClock.start();
     const auto detach = [this] {
         // A QTableWidget destroys its model before QObject deletes child
         // widgets. Stop observing the viewport before those teardown events.
@@ -28,28 +32,67 @@ SongGlassDelegate::SongGlassDelegate(QTableWidget *table)
             m_viewport->removeEventFilter(this);
         m_table = nullptr;
         m_motionTimer.stop();
+        m_scrollAnimating = false;
         m_pressAnimation->stop();
     };
     connect(table->model(), &QObject::destroyed, this, detach);
     connect(table, &QObject::destroyed, this, detach);
+    connect(table->model(), &QAbstractItemModel::modelAboutToBeReset,
+            this, [this] { stopScrollMotion(); });
+    connect(table->model(), &QAbstractItemModel::modelReset, this, [this] {
+        stopScrollMotion();
+        m_textLayouts.clear();
+        if (m_table)
+            m_previousScroll = m_table->verticalScrollBar()->value();
+    });
     m_previousScroll = table->verticalScrollBar()->value();
     m_motionTimer.setTimerType(Qt::PreciseTimer);
-    m_motionTimer.setInterval(Aero::animationInterval(table));
+    m_motionTimer.setSingleShot(true);
+    m_motionSchedule.setRefreshRate(Aero::displayRefreshRate(table), m_motionClock.nsecsElapsed());
+    m_refreshObserver = Aero::observeDisplayRefresh(table, this, [this] {
+        if (!m_table)
+            return;
+        const qint64 now = m_motionClock.nsecsElapsed();
+        m_motionSchedule.setRefreshRate(Aero::displayRefreshRate(m_table), now);
+        scheduleScrollMotion();
+    });
     connect(table->verticalScrollBar(), &QScrollBar::valueChanged,
             this, [this](int value) { beginScrollMotion(value); });
     connect(&m_motionTimer, &QTimer::timeout, this, [this] {
-        if (!m_table) {
+        if (!m_table || !m_table->isVisible()) {
+            stopScrollMotion();
+            return;
+        }
+        if (m_scrollController && m_scrollController->isAnimating()) {
             m_motionTimer.stop();
             return;
         }
-        m_motionAge = m_motionClock.elapsed() / 1000.0;
-        if (m_motionAge >= 0.46) {
-            m_motionTimer.stop();
-            m_motionEnvelope = 0;
-        } else {
-            m_motionEnvelope = std::exp(-m_motionAge * 8.0);
+        const qint64 now = m_motionClock.nsecsElapsed();
+        m_motionSchedule.setRefreshRate(Aero::displayRefreshRate(m_table), now);
+        if (!m_motionSchedule.advance(now)) {
+            m_motionTimer.start(m_motionSchedule.delayMs(now));
+            return;
         }
-        m_table->viewport()->update();
+        advanceScrollMotion();
+        scheduleScrollMotion();
+    });
+    m_scrollController->observeFrames(this, [this](bool continuing, bool cancelled) {
+        if (cancelled) {
+            const bool wasMoving = m_scrollAnimating;
+            stopScrollMotion();
+            if (wasMoving && m_table && m_table->isVisible())
+                m_table->viewport()->update(m_table->viewport()->visibleRegion());
+            return;
+        }
+        if (!m_table || !m_scrollAnimating)
+            return;
+        // Scroll position and jelly state reach Qt's backing store in the same
+        // event-loop turn, instead of painting again on a separate phase.
+        advanceScrollMotion();
+        if (!continuing) {
+            m_motionSchedule.reset(m_motionClock.nsecsElapsed());
+            scheduleScrollMotion();
+        }
     });
     connect(m_pressAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
         m_pressDepth = qBound(-0.25, value.toReal(), 1.05);
@@ -67,6 +110,8 @@ SongGlassDelegate::SongGlassDelegate(QTableWidget *table)
 
 SongGlassDelegate::~SongGlassDelegate()
 {
+    delete m_refreshObserver;
+    m_refreshObserver = nullptr;
     if (m_viewport)
         m_viewport->removeEventFilter(this);
     m_motionTimer.stop();
@@ -98,9 +143,10 @@ void SongGlassDelegate::updateRow(int row)
 
 const QPixmap &SongGlassDelegate::glassLayer(const QSizeF &size, qreal dpr, bool selected) const
 {
-    const QString key = QStringLiteral("%1:%2:%3:%4:%5")
-        .arg(qRound(size.width() * 16)).arg(qRound(size.height() * 16))
-        .arg(qRound(dpr * 1000)).arg(m_accent.rgba()).arg(selected);
+    // Typed keys avoid constructing several temporary strings per visible cell.
+    // Accent changes clear the cache, so its color need not be stored in the key.
+    const GlassKey key{qRound(size.width() * 16), qRound(size.height() * 16),
+                       qRound(dpr * 1000), selected};
     if (QPixmap *cached = m_glassLayers.object(key))
         return *cached;
 
@@ -142,8 +188,7 @@ const QPixmap &SongGlassDelegate::glassLayer(const QSizeF &size, qreal dpr, bool
 
 const QPixmap &SongGlassDelegate::coverLayer(const QIcon &icon, int side, qreal dpr, bool enabled) const
 {
-    const QString key = QStringLiteral("%1:%2:%3:%4")
-        .arg(icon.cacheKey()).arg(side).arg(qRound(dpr * 1000)).arg(enabled);
+    const CoverKey key{icon.cacheKey(), side, qRound(dpr * 1000), enabled};
     if (QPixmap *cached = m_coverLayers.object(key))
         return *cached;
     auto *layer = new QPixmap(qCeil(side * dpr), qCeil(side * dpr));
@@ -184,9 +229,78 @@ const QStaticText &SongGlassDelegate::textLayout(const QModelIndex &index, const
     return layout->text;
 }
 
+const QPixmap &SongGlassDelegate::textLayer(const QModelIndex &index, const QFont &font,
+                                           int width, qreal dpr, const QColor &ink) const
+{
+    textLayout(index, font, width);
+    TextLayout *layout = m_textLayouts.object(index);
+    if (layout->ink != ink) {
+        layout->densityPixels = {};
+        layout->densityClock = 0;
+        layout->ink = ink;
+    }
+    for (auto &density : layout->densityPixels) {
+        if (!density.pixels.isNull() && density.dpr == dpr) {
+            density.lastUsed = ++layout->densityClock;
+            return density.pixels;
+        }
+    }
+    auto *density = &layout->densityPixels.front();
+    for (auto &candidate : layout->densityPixels) {
+        if (candidate.pixels.isNull()) {
+            density = &candidate;
+            break;
+        }
+        if (candidate.lastUsed < density->lastUsed)
+            density = &candidate;
+    }
+    // Rasterize at the actual device density once. Applying a new shear/scale
+    // to QStaticText on Qt's raster engine recalculates text layout every frame.
+    const QSizeF size = layout->text.size();
+    density->pixels = QPixmap(qMax(1, qCeil(size.width() * dpr)),
+                              qMax(1, qCeil(size.height() * dpr)));
+    density->pixels.setDevicePixelRatio(dpr);
+    density->pixels.fill(Qt::transparent);
+    QPainter painter(&density->pixels);
+    painter.setFont(font);
+    painter.setPen(ink);
+    painter.drawStaticText(QPointF(), layout->text);
+    painter.end();
+    density->dpr = dpr;
+    density->lastUsed = ++layout->densityClock;
+    return density->pixels;
+}
+
+void SongGlassDelegate::advanceScrollMotion()
+{
+    if (!m_table || !m_scrollAnimating)
+        return;
+    const qint64 now = m_motionClock.nsecsElapsed();
+    const qreal dt = std::max<qreal>(0, (now - m_previousMotionFrameNs) / 1000000000.0);
+    m_previousMotionFrameNs = now;
+    m_motionAge = now / 1000000000.0;
+    const qreal inputAge = (now - m_previousScrollNs) / 1000000000.0;
+    const qreal target = inputAge < .045 ? m_scrollTarget : 0;
+    const qreal response = target == 0 ? 18.0 : 28.0;
+    m_scrollImpulse += (target - m_scrollImpulse) * (1.0 - std::exp(-response * dt));
+    if ((inputAge > .22 && std::abs(m_scrollImpulse) < .008) || inputAge > .38)
+        stopScrollMotion();
+    m_table->viewport()->update(m_table->viewport()->visibleRegion());
+}
+
+void SongGlassDelegate::scheduleScrollMotion()
+{
+    if (m_scrollController && m_scrollController->isAnimating()) {
+        m_motionTimer.stop();
+        return;
+    }
+    if (m_scrollAnimating)
+        m_motionTimer.start(m_motionSchedule.delayMs(m_motionClock.nsecsElapsed()));
+}
+
 bool SongGlassDelegate::scrollMotionActive() const
 {
-    return m_motionTimer.isActive();
+    return m_scrollAnimating;
 }
 
 bool SongGlassDelegate::pressMotionActive() const
@@ -243,6 +357,7 @@ bool SongGlassDelegate::eventFilter(QObject *watched, QEvent *event)
         const int oldHover = m_hoveredRow;
         m_hoveredRow = -1;
         updateRow(oldHover);
+        stopScrollMotion();
         if (m_pointerHeld) {
             m_pointerHeld = false;
             animatePress(0, true);
@@ -259,19 +374,48 @@ void SongGlassDelegate::beginScrollMotion(int value)
         return;
     const int delta = value - m_previousScroll;
     m_previousScroll = value;
+    if (!m_table->isVisible()) {
+        stopScrollMotion();
+        return;
+    }
     if (!delta)
         return;
+    if (m_scrollController && m_scrollController->isAnimating())
+        m_motionTimer.stop();
     if (m_hoveredRow >= 0)
         m_hoveredRow = m_table->rowAt(qRound(m_pointer.y()));
-    // A scrollbar jump or a freshly rebuilt large library must never create a
-    // large deformation. Small wheel scrolls use the same bounded animation.
-    m_scrollImpulse = qBound(-1.0, delta / 80.0, 1.0);
-    m_motionAge = 0;
+    // Scrollbar changes drive a bounded velocity response. The phase clock is
+    // continuous: retargeting each wheel/touchpad tick never restarts the wave.
+    const qint64 now = m_motionClock.nsecsElapsed();
+    const bool fresh = !m_scrollAnimating || now - m_previousScrollNs > 80000000;
+    const qreal dt = fresh ? Aero::animationInterval(m_table) / 1000.0
+        : std::max<qreal>(.001, (now - m_previousScrollNs) / 1000000000.0);
+    m_scrollTarget = qBound(-1.0, delta / dt / 1600.0, 1.0);
+    m_previousScrollNs = now;
+    m_motionAge = now / 1000000000.0;
     m_motionEnvelope = 1;
-    m_motionClock.restart();
-    m_motionTimer.setInterval(Aero::animationInterval(m_table));
-    m_motionTimer.start();
-    m_table->viewport()->update();
+    if (!m_scrollAnimating) {
+        m_scrollAnimating = true;
+        m_previousMotionFrameNs = now;
+        m_motionSchedule.setRefreshRate(Aero::displayRefreshRate(m_table), now);
+        m_motionSchedule.reset(now);
+        scheduleScrollMotion();
+        // Native scrolling can reuse/move old viewport pixels. Repaint the
+        // initially visible cards once so their sampled wallpaper stays fixed
+        // in world coordinates; subsequent motion is paced by the frame budget.
+        if (!m_scrollController || !m_scrollController->isAnimating())
+            m_table->viewport()->update(m_table->viewport()->visibleRegion());
+    }
+    // No row/model scan: only the visible viewport participates in the motion.
+}
+
+void SongGlassDelegate::stopScrollMotion()
+{
+    m_motionTimer.stop();
+    m_scrollAnimating = false;
+    m_scrollTarget = 0;
+    m_scrollImpulse = 0;
+    m_motionEnvelope = 0;
 }
 
 void SongGlassDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
@@ -312,13 +456,12 @@ void SongGlassDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     deformation.scale(1.0 + squash * 0.13 + press * 0.0025,
                       1.0 - squash - press * 0.038);
     deformation.translate(-bounds.center().x(), -bounds.center().y());
-    painter->setTransform(deformation, true);
-
     // Sample only the analytic backdrop surface, never the table's own painted
     // contents. A shared row transform keeps the four column clips seamless.
     Liquid::paintSurfaceBackdrop(*painter, m_table->viewport(), bounds, 18,
                                  QPointF(pointerX * 2.8 - displacement.x() * 0.45,
-                                         pointerY * 1.5 - displacement.y() * 0.45));
+                                         pointerY * 1.5 - displacement.y() * 0.45), deformation);
+    painter->setTransform(deformation, true);
     const qreal dpr = painter->device()->devicePixelRatioF();
     painter->drawPixmap(bounds.topLeft() - QPointF(6, 6), glassLayer(bounds.size(), dpr, selected));
     if (hovered) {
@@ -356,13 +499,12 @@ void SongGlassDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         QFont font = option.font;
         if (index.column() == 1)
             font.setWeight(QFont::DemiBold);
-        painter->setFont(font);
         QColor ink = index.column() == 1 ? QColor(QStringLiteral("#eef4fa")) : QColor(QStringLiteral("#939eae"));
         if (!option.state.testFlag(QStyle::State_Enabled))
             ink.setAlpha(145);
-        painter->setPen(ink);
-        const QStaticText &text = textLayout(index, font, int(content.width()));
-        painter->drawStaticText(QPointF(content.left(), content.center().y() - text.size().height() / 2), text);
+        const QPixmap &text = textLayer(index, font, int(content.width()), dpr, ink);
+        painter->drawPixmap(QPointF(content.left(), content.center().y()
+                            - text.deviceIndependentSize().height() / 2), text);
     }
 
     painter->restore();

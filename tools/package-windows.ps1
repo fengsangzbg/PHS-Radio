@@ -12,8 +12,8 @@ param(
     [string] $ExePath = '',
     [ValidateSet('Release', 'RelWithDebInfo', 'MinSizeRel')]
     [string] $Configuration = 'Release',
-    [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')]
-    [string] $Version = '0.2.2',
+    [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta(?:\.[1-9][0-9]*)?)?$')]
+    [string] $Version = '0.2.3-beta',
     [switch] $ValidateOnly
 )
 
@@ -174,6 +174,9 @@ foreach ($required in @($exeSource, $deployTool, $objdumpTool, $nodeSource, $rel
 
 Assert-NoReparsePoint $exeSource
 $exeVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exeSource)
+if ($exeVersion.ProductVersion -ne $Version) {
+    throw "Executable product version '$($exeVersion.ProductVersion)' does not match package version '$Version': $exeSource"
+}
 if ($Version -match '^(\d+)\.(\d+)\.(\d+)(?:[.+-].*)?$') {
     $wanted = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
     if ($exeVersion.FileMajorPart -ne $wanted[0] -or $exeVersion.FileMinorPart -ne $wanted[1] -or

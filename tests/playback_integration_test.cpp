@@ -115,6 +115,43 @@ void verifyProgressAndPausedSeek(PlayerWindow &window, const QVector<Track> &tra
           "Progress manipulation must preserve the selected queue context.");
 }
 
+void verifyMusicVolume(PlayerWindow &window)
+{
+    const auto background = window.m_surface->backgroundTheme();
+    QSlider *volume = window.m_dock->volumeSlider();
+    volume->setValue(25);
+    volume->setValue(35);
+    check(qAbs(window.m_audioOutput->volume() - 0.35f) < 0.001f,
+          "The Dock must control the actual music audio output.");
+    check(!QSettings().contains(QStringLiteral("audio/musicVolume")),
+          "Dragging music volume must coalesce settings writes rather than write every step.");
+    check(waitUntil([] { return QSettings().contains(QStringLiteral("audio/musicVolume")); }, 5000),
+          "The final user volume must be saved after the drag settles.");
+    check(qAbs(QSettings().value(QStringLiteral("audio/musicVolume")).toDouble() - 0.35) < 0.001,
+          "The saved volume must match the last slider value.");
+    window.m_dock->muteButton()->click();
+    check(window.m_audioOutput->isMuted() && volume->value() == 35,
+          "Muting music must preserve its volume for restoration.");
+    check(waitUntil([] { return QSettings().value(QStringLiteral("audio/musicMuted")).toBool(); }, 5000),
+          "Music mute must persist independently of the background theme.");
+    {
+        PlayerWindow restored({MusicPlatform::QQMusic}, true);
+        check(restored.m_audioOutput->isMuted()
+                  && qAbs(restored.m_audioOutput->volume() - 0.35f) < 0.001f
+                  && restored.m_dock->volumeSlider()->value() == 35,
+              "Reopening the player must restore real audio output and Dock volume together.");
+    }
+    volume->setValue(40);
+    check(!window.m_audioOutput->isMuted() && qAbs(window.m_audioOutput->volume() - 0.4f) < 0.001f,
+          "A positive user volume adjustment must unmute the actual music output.");
+    check(window.m_surface->backgroundTheme().kind == background.kind
+              && window.m_surface->backgroundTheme().sourcePath == background.sourcePath,
+          "Music volume must leave the wallpaper theme unchanged.");
+    window.m_audioSettingsTimer.stop();
+    window.m_audioOutput->setVolume(0); // Keep the subsequent local media fixtures silent.
+    window.m_audioOutput->setMuted(false);
+}
+
 void verifyManualNavigationAndViewIndependence(PlayerWindow &window, const QVector<Track> &tracks)
 {
     // Changing the visible list represents filtering or choosing another
@@ -267,8 +304,24 @@ void verifyAudioDeviceFollowing(PlayerWindow &window, const Track &track)
     moveToAlternateOutput();
     const qint64 playingPosition = window.m_player->position();
     notifyDeviceChange();
-    check(window.m_player->playbackState() == QMediaPlayer::PlayingState
-              && window.m_player->position() > playingPosition,
+    // The device property changes before the backend's replacement sink and
+    // playback clock are ready. Observe actual recovery instead of assuming it
+    // has finished within the notification helper's fixed 280 ms delay.
+    const bool advancedAfterSwitch = waitUntil([&] {
+        return window.m_player->playbackState() == QMediaPlayer::PlayingState
+            && window.m_player->position() > playingPosition;
+    }, 2000);
+    if (!advancedAfterSwitch) {
+        qCritical() << "Audio route did not recover within 2 seconds"
+                    << "before" << playingPosition << "after" << window.m_player->position()
+                    << "state" << window.m_player->playbackState()
+                    << "mediaStatus" << window.m_player->mediaStatus()
+                    << "error" << window.m_player->error() << window.m_player->errorString()
+                    << "routeTimerActive" << window.m_audioRouteTimer.isActive()
+                    << "deviceIsDefault"
+                    << (window.m_audioOutput->device().id() == QMediaDevices::defaultAudioOutput().id());
+    }
+    check(advancedAfterSwitch,
           "Switching outputs while playing must keep the song advancing.");
 
     window.m_player->pause();
@@ -323,9 +376,12 @@ int main(int argc, char **argv)
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("PHS Radio Tests"));
     QCoreApplication::setApplicationName(QStringLiteral("Playback Integration Test"));
-    QSettings().clear();
     QTemporaryDir temporary;
     check(temporary.isValid(), "A temporary folder must be available for local media fixtures.");
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.filePath(QStringLiteral("settings/user")));
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, temporary.filePath(QStringLiteral("settings/system")));
+    QSettings().clear();
     const QVector<Track> tracks{
         song(QStringLiteral("First local song"), writeWave(temporary.filePath(QStringLiteral("first.wav")), 1250, 220)),
         song(QStringLiteral("Second local song"), writeWave(temporary.filePath(QStringLiteral("second.wav")), 1250, 330))
@@ -351,6 +407,7 @@ int main(int argc, char **argv)
     window.m_dock->setPinned(true);
     window.show();
     QCoreApplication::processEvents();
+    verifyMusicVolume(window);
     verifyProgressAndPausedSeek(window, tracks);
     verifyManualNavigationAndViewIndependence(window, tracks);
     verifyAutomaticAdvancement(window, tracks);

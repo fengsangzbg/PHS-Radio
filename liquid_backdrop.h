@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QPointF>
+#include <QTransform>
 #include <QRectF>
 
 class QPainter;
@@ -20,5 +21,7 @@ void invalidateBackdrop(QWidget *content);
 // offset is a small sampling displacement in surface coordinates.
 void paintSurfaceBackdrop(QPainter &painter, QWidget *viewport, const QRectF &bounds,
                           qreal radius, const QPointF &offset = {});
+void paintSurfaceBackdrop(QPainter &painter, QWidget *viewport, const QRectF &bounds,
+                          qreal radius, const QPointF &offset, const QTransform &shapeTransform);
 
 } // namespace Liquid

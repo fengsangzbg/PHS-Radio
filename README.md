@@ -6,14 +6,14 @@
 
 液态玻璃、水光、柔和发光与弹性回馈，让听歌界面也成为桌面的一部分。支持导入 **Wallpaper Engine 动态壁纸**，搭配自定义背景、主题色和遮暗程度，从复古到明亮，自由组合多种风格。
 
-[下载 Windows 64 位版本](https://github.com/fengsangzbg/PHS-Radio/releases/latest) · [查看发布记录](https://github.com/fengsangzbg/PHS-Radio/releases) · [反馈问题](https://github.com/fengsangzbg/PHS-Radio/issues)
+[试用 0.2.3 beta](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.2.3-beta) · [下载 Windows 64 位稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest) · [查看发布记录](https://github.com/fengsangzbg/PHS-Radio/releases) · [反馈问题](https://github.com/fengsangzbg/PHS-Radio/issues)
 
 ## 可以做什么
 
 - 酷狗扫码登录，读取账号歌单和歌单歌曲，汇总全部音乐。
 - 搜索酷狗在线曲库，或单独搜索自己的歌单；支持部分名称、拼音及已收录别名。
 - 首页每日推荐、跟随电脑时区的玻璃时钟、日期与年份。
-- 自动弹出的播放 Dock：顺序／随机播放、暂停、切歌、可拖动进度条与固定按钮。
+- 自动弹出的播放 Dock：顺序／随机播放、暂停、切歌、可拖动进度条、独立音乐音量／静音与固定按钮。
 - 同步滚动歌词，以及带高清封面的旋转玻璃唱片。
 - 左侧滑出歌单、独立玻璃歌曲卡片、悬停高光、弹性按钮与多颗蓝色播放流星。
 - 导入图片、GIF、视频和 Wallpaper Engine 壁纸，自定义背景与配色，组合复古、明亮等风格。
@@ -25,12 +25,14 @@
 
 ## 安装与使用
 
-1. 到 [Releases](https://github.com/fengsangzbg/PHS-Radio/releases/latest) 下载 `PHS-Radio-0.2.2-windows-x64.zip`。
+1. 到 [0.2.3 beta 发布页](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.2.3-beta) 下载 Windows x64 完整测试包；也可选择[最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest)。
 2. **完整解压**后双击 `PHSRadio.exe`。保留 DLL、Qt 插件、`runtime`、`services` 等全部文件；无需另装 Qt、Node.js 或 npm。
 3. 使用手机酷狗 App 扫描软件中的二维码，确认登录。
 4. 歌单会在后台逐步加载。未加载完整时可从歌单面板重试；双击歌曲即可播放。
 
 v0.2.1 首次升级需要下载新版完整包；从 v0.2.2 起，点击标题栏“更新”，有新版本时选择“下载并更新”。更新会正常退出播放器、替换应用文件并自动重启，保留账号和主题设置；下载或安装失败时保留或恢复旧版。请将便携包放在当前用户可写的文件夹。
+
+当前更新按钮检查稳定版通道，不会自动安装 beta。试用 `0.2.3-beta` 请从上面的测试版发布页手动下载并完整解压。
 
 账号凭据使用当前 Windows 用户的 DPAPI 加密保存。发布包不包含开发者账号、登录信息或导入的私人壁纸。
 
@@ -42,6 +44,10 @@ v0.2.1 首次升级需要下载新版完整包；从 v0.2.2 起，点击标题�
 
 壁纸与封面保留源图，按屏幕实际像素显示；实际清晰度、动态帧率仍取决于原始素材、Wallpaper Engine 设置与电脑性能。
 
+场景与网页壁纸的源帧率使用 Wallpaper Engine 的全局设置：在 Wallpaper Engine 的“设置 → 性能”中修改并应用，会同时影响桌面和播放器中的该类背景。当前 Windows 捕获后端最高为 60 FPS，实际呈现还受屏幕刷新率与绘制开销影响；将 WE 设为 165 FPS 不代表播放器能输出 165 FPS。视频壁纸保持原视频帧率，调整 WE 的限帧不会插入额外视频帧。
+
+Dock 音量只控制软件内的音乐，不改变 Windows 主音量；背景继续静音。音量和静音状态会在下次启动时恢复。
+
 ## 构建
 
 需要 CMake 3.21+、C++17、Qt 6.6+（Widgets、Multimedia、Network）及 ICU。Windows 发布使用 MSYS2 UCRT64：
@@ -50,12 +56,14 @@ v0.2.1 首次升级需要下载新版完整包；从 v0.2.2 起，点击标题�
 cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPHSRADIO_KUGOU_ONLY=ON
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.2
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.3-beta
 ```
 
 本机服务源码与依赖锁位于 `services/kugou`，开发或重新打包前运行 `npm ci --prefix services/kugou --omit=dev --ignore-scripts`。服务只监听本机 `127.0.0.1:3737`。
 
 `PHSRADIO_KUGOU_ONLY=ON` 生成仅开放酷狗的发布版。未开放平台的开发代码保留在仓库，测试不会使用真实账号。更多实现细节见 [开发说明](docs/development.md)。
+
+默认构建版本为 `0.2.3-beta`。正式构建需显式传入 `-DPHSRADIO_PRERELEASE=`，并以相同版本号打包。Beta 版的更新检查仍查询正式 Release，可正常升级到后续正式版本。
 
 ## 许可与依赖源码
 

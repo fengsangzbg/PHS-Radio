@@ -1,5 +1,6 @@
 ﻿#include "liquid_backdrop.h"
 #include "aero_surface.h"
+#include "liquid_image_blur.h"
 
 #include <QCache>
 #include <QAbstractItemView>
@@ -28,40 +29,6 @@ AeroSurface *surfaceFor(QWidget *widget)
             return surface;
     }
     return nullptr;
-}
-
-QImage blurPass(const QImage &input, int radius, bool horizontal)
-{
-    QImage result(input.size(), QImage::Format_ARGB32_Premultiplied);
-    const int lines = horizontal ? input.height() : input.width();
-    const int length = horizontal ? input.width() : input.height();
-    const int divisor = radius * 2 + 1;
-    for (int line = 0; line < lines; ++line) {
-        const auto pixel = [&](int position) {
-            position = std::clamp(position, 0, length - 1);
-            const int x = horizontal ? position : line;
-            const int y = horizontal ? line : position;
-            return reinterpret_cast<const QRgb *>(input.constScanLine(y))[x];
-        };
-        int red = 0, green = 0, blue = 0, alpha = 0;
-        const auto add = [&](QRgb color, int sign) {
-            red += sign * qRed(color);
-            green += sign * qGreen(color);
-            blue += sign * qBlue(color);
-            alpha += sign * qAlpha(color);
-        };
-        for (int position = -radius; position <= radius; ++position)
-            add(pixel(position), 1);
-        for (int position = 0; position < length; ++position) {
-            const int x = horizontal ? position : line;
-            const int y = horizontal ? line : position;
-            reinterpret_cast<QRgb *>(result.scanLine(y))[x] =
-                qRgba(red / divisor, green / divisor, blue / divisor, alpha / divisor);
-            add(pixel(position - radius), -1);
-            add(pixel(position + radius + 1), 1);
-        }
-    }
-    return result;
 }
 
 struct Backdrop {
@@ -259,8 +226,8 @@ Backdrop *sample(QWidget *panel, AeroSurface *surface, const QRect &visiblePanel
         }
     }
     for (int pass = 0; pass < 2; ++pass) {
-        image = blurPass(image, 3, true);
-        image = blurPass(image, 3, false);
+        image = Liquid::detail::boxBlurPass<3>(image, true);
+        image = Liquid::detail::boxBlurPass<3>(image, false);
     }
     replacement->blurred = std::move(image);
     replacement->age.start();
@@ -274,6 +241,12 @@ namespace Liquid {
 void paintSurfaceBackdrop(QPainter &painter, QWidget *viewport, const QRectF &bounds,
                           qreal radius, const QPointF &offset)
 {
+    paintSurfaceBackdrop(painter, viewport, bounds, radius, offset, QTransform());
+}
+
+void paintSurfaceBackdrop(QPainter &painter, QWidget *viewport, const QRectF &bounds,
+                          qreal radius, const QPointF &offset, const QTransform &shapeTransform)
+{
     // Capturing a transparent card/text layer must not bake animated, opaque
     // water into it. The current water is composed under that layer afterward.
     if (backdrops().sampling)
@@ -285,9 +258,24 @@ void paintSurfaceBackdrop(QPainter &painter, QWidget *viewport, const QRectF &bo
     QPainterPath clip;
     clip.addRoundedRect(bounds, radius, radius);
     painter.save();
-    painter.setClipPath(clip, Qt::IntersectClip);
+    // Deform the glass silhouette, not the complete wallpaper texture. The
+    // material still reveals the moving world beneath it, while the raster
+    // engine can copy its pixels without resampling the entire row by a shear.
+    painter.setClipPath(shapeTransform.map(clip), Qt::IntersectClip);
     const QPointF worldOrigin = viewport->mapTo(surface, QPoint(0, 0));
-    surface->paintWater(painter, bounds, worldOrigin + offset);
+    const qreal dpr = viewport->devicePixelRatioF();
+    const QPointF alignedOffset(qRound(offset.x() * dpr) / dpr,
+                                qRound(offset.y() * dpr) / dpr);
+    const QRectF mapped = shapeTransform.mapRect(bounds);
+    const QRectF sampleBounds(QPointF(std::floor(mapped.left() * dpr) / dpr,
+                                     std::floor(mapped.top() * dpr) / dpr),
+                              QPointF(std::ceil(mapped.right() * dpr) / dpr,
+                                     std::ceil(mapped.bottom() * dpr) / dpr));
+    // Custom wallpapers are already cached at this physical pixel density.
+    // Pixel-aligned 1:1 sampling needs no bilinear filtering; analytic water
+    // enables its own filtering when upsampling its lower-resolution field.
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    surface->paintWater(painter, sampleBounds, worldOrigin + alignedOffset);
     painter.restore();
 }
 
@@ -296,7 +284,7 @@ void paintBackdrop(QPainter &painter, QWidget *panel, qreal radius)
     AeroSurface *surface = surfaceFor(panel);
     if (!surface || !panel || panel->size().isEmpty())
         return;
-    surface->registerBackgroundConsumer(panel);
+    surface->registerBlurredBackgroundConsumer(panel);
     Backdrops &state = backdrops();
     if (state.sampling) {
         return;

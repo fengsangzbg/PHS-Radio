@@ -108,9 +108,22 @@ void verifyParsers()
         "Version comparison must compare numeric components, not strings.");
     verify(AppUpdater::compareVersions("v1.0.0", "0.999.999", &valid) > 0 && valid, "Major versions must take priority.");
     verify(AppUpdater::compareVersions("v0.2.2", "0.2.2", &valid) == 0 && valid, "Tag prefix v must be accepted.");
-    for (const auto &value : {"0.2", "01.2.3", "0.2.2-beta", "0.2.2+meta", "-1.2.3", "18446744073709551616.0.0"}) {
+    verify(AppUpdater::compareVersions("0.2.3-beta", "0.2.3", &valid) < 0 && valid
+        && AppUpdater::compareVersions("0.2.3", "0.2.3-beta", &valid) > 0 && valid,
+        "The next stable release must sort above its same-version local beta.");
+    verify(AppUpdater::compareVersions("0.2.3-beta", "0.2.2", &valid) > 0 && valid
+        && AppUpdater::compareVersions("0.2.3-beta.99", "0.2.4-beta", &valid) < 0 && valid,
+        "Numeric base components take precedence over beta/stable status and beta sequence numbers.");
+    verify(AppUpdater::compareVersions("v0.2.3-beta.10", "0.2.3-beta.2", &valid) > 0 && valid
+        && AppUpdater::compareVersions("0.2.3-beta", "0.2.3-beta.0", &valid) < 0 && valid
+        && AppUpdater::compareVersions("0.2.3-beta.2", "v0.2.3-beta.2", &valid) == 0 && valid,
+        "Beta sequence numbers compare numerically, with an unnumbered beta before numbered betas.");
+    for (const auto &value : {"0.2", "01.2.3", "0.2.2+meta", "-1.2.3", "18446744073709551616.0.0",
+        "0.2.3-alpha", "0.2.3-rc.1", "0.2.3-BETA", "0.2.3-beta1", "0.2.3-beta.",
+        "0.2.3-beta.01", "0.2.3-beta.-1", "0.2.3-beta.1.2", "0.2.3-beta+meta",
+        "0.2.3-beta.18446744073709551616", "0.2.3-beta ", "v0.2.3-beta\n"}) {
         AppUpdater::compareVersions(value, "0.2.2", &valid);
-        verify(!valid, "Only well-formed stable three-component semantic versions may be installed.");
+        verify(!valid, "Version comparison must reject unsupported or malformed beta suffixes and overflowing numbers.");
     }
     const QByteArray archive("fixture archive bytes");
     const auto object = release(archive);
@@ -132,6 +145,14 @@ void verifyParsers()
     for (const auto &field : {"draft", "prerelease"}) {
         auto invalid = object; invalid[field] = true;
         verify(!AppUpdater::parseRelease(json(invalid), &info), "Draft and prerelease packages must be rejected.");
+    }
+    for (const auto &tag : {"v0.2.3-beta", "v0.2.3-beta.1"}) {
+        auto invalid = object;
+        invalid["tag_name"] = tag;
+        invalid["prerelease"] = false;
+        verify(!AppUpdater::parseRelease(json(invalid), &info, &message)
+            && message.contains(QStringLiteral("正式")),
+            "Remote beta tags remain forbidden even when GitHub incorrectly marks the release stable.");
     }
     auto duplicate = object;
     auto assets = duplicate.value("assets").toArray(); assets.append(assets[0]); duplicate["assets"] = assets;
@@ -182,6 +203,50 @@ void verifyDownload(const QString &cache)
         "Verified archive bytes must be saved unchanged, including binary contents.");
     verify(!QFile::exists(QDir(updater.m_transactionDir).filePath("installer.ready")),
         "Downloading a package must not apply any installation changes.");
+}
+
+void verifyBetaUpdateChecks()
+{
+    const QByteArray archive("future stable fixture archive");
+    auto futureStable = release(archive);
+    futureStable["tag_name"] = "v0.2.3";
+    auto assets = futureStable.value("assets").toArray();
+    for (int index = 0; index < assets.size(); ++index) {
+        auto asset = assets[index].toObject();
+        asset["name"] = asset.value("name").toString().replace("0.2.2", "0.2.3");
+        asset["browser_download_url"] = asset.value("browser_download_url").toString().replace("0.2.2", "0.2.3");
+        assets[index] = asset;
+    }
+    futureStable["assets"] = assets;
+    {
+        FixtureNetwork network;
+        network.responses = {{json(futureStable)}};
+        AppUpdater updater(nullptr, "0.2.3-beta", &network);
+        int available = 0, failures = 0;
+        QObject::connect(&updater, &AppUpdater::updateAvailable, &updater,
+            [&](const QString &version, const QString &) {
+                verify(version == "0.2.3", "A local beta must offer its subsequent same-version stable release.");
+                ++available;
+            });
+        QObject::connect(&updater, &AppUpdater::error, &updater, [&](const QString &) { ++failures; });
+        updater.checkForUpdates();
+        await([&] { return available || failures; });
+        verify(available == 1 && failures == 0 && updater.latestVersion() == "0.2.3"
+            && network.requested.size() == 1,
+            "Beta update checks must compare safely with stable releases without downloading automatically.");
+    }
+    {
+        FixtureNetwork network;
+        network.responses = {{json(release(archive))}};
+        AppUpdater updater(nullptr, "0.2.3-beta.2", &network);
+        int current = 0, failures = 0;
+        QObject::connect(&updater, &AppUpdater::upToDate, &updater, [&] { ++current; });
+        QObject::connect(&updater, &AppUpdater::error, &updater, [&](const QString &) { ++failures; });
+        updater.checkForUpdates();
+        await([&] { return current || failures; });
+        verify(current == 1 && failures == 0 && updater.latestVersion().isEmpty(),
+            "A local beta must not downgrade itself to an older-base stable release or report an invalid version.");
+    }
 }
 
 void verifyFailuresAndCancel(const QString &cache)
@@ -246,6 +311,7 @@ int main(int argc, char **argv)
     verify(fixture.isValid(), "Updater tests need an isolated temporary directory.");
     verifyParsers();
     verifyDownload(fixture.path());
+    verifyBetaUpdateChecks();
     verifyFailuresAndCancel(fixture.path());
     std::puts("App updater parsers, trusted downloads, checksum failures and cancellation passed.");
     return 0;

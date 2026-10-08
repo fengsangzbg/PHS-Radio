@@ -3,6 +3,7 @@
 #include "aero_widgets.h"
 #include "liquid_backdrop.h"
 
+#include <QApplication>
 #include <QHideEvent>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -10,20 +11,69 @@
 #include <QLocale>
 #include <QPainter>
 #include <QPainterPath>
+#include <QResizeEvent>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QShowEvent>
+#include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <algorithm>
 
 namespace {
+
+class RecommendationList final : public QListWidget {
+public:
+    explicit RecommendationList(QWidget *parent) : QListWidget(parent) {}
+protected:
+    void wheelEvent(QWheelEvent *event) override
+    {
+        const bool horizontal = event->pixelDelta().x() || event->angleDelta().x()
+            || (event->modifiers() & Qt::ShiftModifier);
+        if (!horizontal) {
+            // Item views can consume an ignored wheel before it reaches their
+            // outer scroll area. Forward it explicitly, with viewport-local
+            // coordinates and the original device/gesture data intact.
+            for (QWidget *ancestor = parentWidget(); ancestor; ancestor = ancestor->parentWidget()) {
+                if (auto *outer = qobject_cast<QScrollArea *>(ancestor)) {
+                    const QPointF global = event->globalPosition();
+                    QWheelEvent forwarded(outer->viewport()->mapFromGlobal(global),
+                        global, event->pixelDelta(), event->angleDelta(), event->buttons(),
+                        event->modifiers(), event->phase(), event->inverted(), event->source(),
+                        event->pointingDevice());
+                    forwarded.setTimestamp(event->timestamp());
+                    QApplication::sendEvent(outer->viewport(), &forwarded);
+                    event->accept();
+                    return;
+                }
+            }
+            event->ignore();
+            return;
+        }
+        auto *bar = horizontalScrollBar();
+        if (bar->maximum() <= bar->minimum()) {
+            event->ignore();
+            return;
+        }
+        const QPoint pixels = event->pixelDelta();
+        const QPoint angles = event->angleDelta();
+        const int delta = !pixels.isNull() ? (pixels.x() ? pixels.x() : pixels.y())
+            : qRound((angles.x() ? angles.x() : angles.y()) / 120.0
+                     * bar->singleStep() * QApplication::wheelScrollLines());
+        bar->setValue(bar->value() - delta);
+        event->accept();
+    }
+};
 
 class RecommendationDelegate final : public QStyledItemDelegate {
 public:
     explicit RecommendationDelegate(QObject *parent) : QStyledItemDelegate(parent) {}
     QColor accent = Aero::defaultAccent();
+    QSize cardSize{168, 222};
     QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override
-    { return QSize(154, 200); }
+    { return cardSize; }
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
@@ -56,13 +106,16 @@ public:
         painter->restore();
         QFont title = option.font; title.setPointSize(11); title.setWeight(QFont::DemiBold);
         painter->setFont(title); painter->setPen(QColor("#eef4fa"));
-        painter->drawText(QRectF(card.left() + 11, cover.bottom() + 9, card.width() - 22, 21),
+        const QRectF titleRect(card.left() + 11, cover.bottom() + 10,
+                               card.width() - 22, QFontMetrics(title).height() + 4);
+        painter->drawText(titleRect,
                          Qt::AlignLeft | Qt::AlignVCenter,
                          QFontMetrics(title).elidedText(index.data().toString(), Qt::ElideRight,
                                                       qRound(card.width() - 22)));
         QFont artist = option.font; artist.setPointSize(9);
         painter->setFont(artist); painter->setPen(QColor("#96a5b7"));
-        painter->drawText(QRectF(card.left() + 11, cover.bottom() + 32, card.width() - 22, 20),
+        painter->drawText(QRectF(card.left() + 11, titleRect.bottom() + 3,
+                                card.width() - 22, QFontMetrics(artist).height() + 2),
                          Qt::AlignLeft | Qt::AlignVCenter,
                          QFontMetrics(artist).elidedText(index.data(Qt::UserRole).toString(),
                                                        Qt::ElideRight, qRound(card.width() - 22)));
@@ -88,7 +141,7 @@ QLabel *plainLabel(const QString &text, QWidget *parent, const QString &style)
 class HomeRecommendationSection final : public QWidget {
 public:
     explicit HomeRecommendationSection(MusicPlatform platform, QWidget *parent)
-        : QWidget(parent), card(new AeroPanel(this)), list(new QListWidget(card)),
+        : QWidget(parent), card(new AeroPanel(this)), list(new RecommendationList(card)),
           state(plainLabel(QStringLiteral("连接账号，查看你的每日推荐"), card,
                            QStringLiteral("color: #98a8bb; font-size: 12px"))),
           connectButton(new JellyButton(QStringLiteral("连接账号"), card)),
@@ -102,6 +155,7 @@ public:
         auto *header = new QHBoxLayout;
         auto *title = plainLabel(platformName(platform) + QStringLiteral(" · 每日推荐"), card,
                                 QStringLiteral("color: #eef4fa; font-size: 16px; font-weight: 600"));
+        title->setWordWrap(true);
         header->addWidget(title, 1);
         connectButton->setFixedSize(82, 34);
         header->addWidget(connectButton); layout->addLayout(header);
@@ -112,26 +166,48 @@ public:
         list->setMovement(QListView::Static);
         list->setResizeMode(QListView::Adjust);
         list->setFlow(QListView::LeftToRight);
-        list->setWrapping(true);
-        list->setSpacing(1);
+        list->setWrapping(false);
+        list->setSpacing(4);
+        list->setUniformItemSizes(true);
+        list->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+        list->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        list->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        list->setToolTip(QStringLiteral("横向滚动查看全部推荐；Shift + 滚轮也可横向浏览"));
         list->setFrameShape(QFrame::NoFrame);
         list->setItemDelegate(delegate);
         list->setMouseTracking(true);
-        list->setMinimumHeight(170);
         list->setStyleSheet(QStringLiteral(
             "QListWidget{background:transparent;border:none;outline:none;}"
-            "QScrollBar:vertical{background:transparent;width:5px;margin:4px;}"
-            "QScrollBar::handle:vertical{background:rgba(210,230,250,55);border-radius:2px;min-height:22px;}"
-            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
-            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"));
+            "QScrollBar:horizontal{background:transparent;height:8px;margin:0 4px;}"
+            "QScrollBar::handle:horizontal{background:rgba(210,230,250,65);border-radius:4px;min-width:24px;}"
+            "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;}"
+            "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}"));
         list->viewport()->setAutoFillBackground(false);
-        layout->addWidget(list, 1);
+        layout->addWidget(list);
+        setCardWidth(168);
         QObject::connect(list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
             if (activated) activated(list->row(item));
         });
         QObject::connect(connectButton, &QPushButton::clicked, this, [this] {
             if (connectRequested) connectRequested();
         });
+    }
+    void setCardWidth(int width)
+    {
+        QFont title = list->font(); title.setPointSize(11); title.setWeight(QFont::DemiBold);
+        QFont artist = list->font(); artist.setPointSize(9);
+        const int coverSide = width - 28;
+        const int height = coverSide + 43 + QFontMetrics(title).height() + 4
+            + QFontMetrics(artist).height() + 2;
+        const QSize size(width, height);
+        if (delegate->cardSize != size) {
+            delegate->cardSize = size;
+            list->setGridSize(size + QSize(8, 8));
+            list->doItemsLayout();
+        }
+        // Reserve the full square cover, both text lines and scrollbar. The
+        // outer page scrolls instead of compressing this strip and clipping it.
+        list->setFixedHeight(height + 8 + list->style()->pixelMetric(QStyle::PM_ScrollBarExtent) + 2);
     }
     void setTracks(const QVector<Track> &tracks)
     {
@@ -161,15 +237,38 @@ HomePage::HomePage(QWidget *parent)
     : QWidget(parent), m_clock(new QLabel(this)), m_date(new QLabel(this)),
       m_year(new QLabel(this)), m_timezone(new QLabel(this)), m_clockTimer(new QTimer(this)),
       m_clockCard(new AeroPanel(this)),
+      m_scroll(new QScrollArea(this)), m_content(new QWidget),
+      m_recommendationsLayout(new QBoxLayout(QBoxLayout::LeftToRight)),
       m_kugou(new HomeRecommendationSection(MusicPlatform::Kugou, this)),
       m_netease(new HomeRecommendationSection(MusicPlatform::NetEaseCloud, this)),
       m_accent(Aero::defaultAccent())
 {
     setObjectName(QStringLiteral("homePage"));
     setAttribute(Qt::WA_TranslucentBackground); setAutoFillBackground(false);
-    auto *layout = new QVBoxLayout(this);
+    auto *outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    m_scroll->setObjectName(QStringLiteral("homeScrollArea"));
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    m_scroll->setStyleSheet(QStringLiteral(
+        "QScrollArea#homeScrollArea{background:transparent;border:none;}"
+        "QScrollBar:vertical{background:transparent;width:7px;margin:4px 0;}"
+        "QScrollBar::handle:vertical{background:rgba(210,230,250,65);border-radius:3px;min-height:24px;}"
+        "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+        "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"));
+    m_scroll->viewport()->setAutoFillBackground(false);
+    m_scroll->viewport()->installEventFilter(this);
+    m_scroll->setWidget(m_content);
+    // setWidget enables the child's palette fill by default; disable it after
+    // adoption so the wallpaper stays visible through this scroll container.
+    m_content->setAutoFillBackground(false);
+    m_scroll->viewport()->setAutoFillBackground(false);
+    outer->addWidget(m_scroll);
+    auto *layout = new QVBoxLayout(m_content);
     layout->setContentsMargins(24, 18, 24, 174); layout->setSpacing(18);
-    auto *heading = plainLabel(QStringLiteral("今天，听点什么"), this,
+    auto *heading = plainLabel(QStringLiteral("今天，听点什么"), m_content,
         QStringLiteral("color: #eef4fa; font-size: 23px; font-weight: 600"));
     layout->addWidget(heading);
     auto *clockLayout = new QHBoxLayout(m_clockCard);
@@ -178,6 +277,7 @@ HomePage::HomePage(QWidget *parent)
     time->setSpacing(1);
     QFont digits(QStringLiteral("Segoe UI")); digits.setPointSize(57); digits.setWeight(QFont::Light);
     m_clock->setFont(digits); m_clock->setMinimumWidth(0);
+    m_clock->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_clock->setObjectName(QStringLiteral("localClock"));
     m_clock->setStyleSheet(QStringLiteral("color:#eff8ff;background:transparent;"));
     m_clock->setTextFormat(Qt::PlainText);
@@ -193,9 +293,11 @@ HomePage::HomePage(QWidget *parent)
     calendar->addWidget(m_year); calendar->addWidget(m_date);
     clockLayout->addLayout(calendar);
     layout->addWidget(m_clockCard);
-    auto *recommendations = new QHBoxLayout; recommendations->setSpacing(18);
-    recommendations->addWidget(m_kugou, 1); recommendations->addWidget(m_netease, 1);
-    layout->addLayout(recommendations, 1);
+    m_recommendationsLayout->setSpacing(18);
+    m_recommendationsLayout->addWidget(m_kugou, 1);
+    m_recommendationsLayout->addWidget(m_netease, 1);
+    layout->addLayout(m_recommendationsLayout);
+    layout->addStretch();
     for (HomeRecommendationSection *section : {m_kugou, m_netease}) {
         section->activated = [this, section](int index) {
             if (m_kugouOnly && section->platform != MusicPlatform::Kugou) return;
@@ -209,6 +311,7 @@ HomePage::HomePage(QWidget *parent)
     m_clockTimer->setInterval(1000); m_clockTimer->setTimerType(Qt::CoarseTimer);
     connect(m_clockTimer, &QTimer::timeout, this, [this] { refreshClock(); });
     refreshClock(); setAccentColor(m_accent);
+    scheduleResponsiveLayout();
 }
 
 HomeRecommendationSection *HomePage::section(MusicPlatform platform) const
@@ -226,6 +329,7 @@ void HomePage::setKugouOnly(bool enabled)
     m_netease->setVisible(!enabled);
     m_netease->setEnabled(!enabled);
     if (enabled) m_netease->list->clear();
+    scheduleResponsiveLayout();
     Liquid::invalidateBackdrop(this);
 }
 
@@ -256,7 +360,16 @@ void HomePage::setRecommendationState(MusicPlatform platform, const QString &mes
 void HomePage::setCover(MusicPlatform platform, int index, const QPixmap &cover)
 {
     if (auto *entry = section(platform))
-        if (auto *item = entry->list->item(index)) item->setIcon(QIcon(cover));
+        if (auto *item = entry->list->item(index)) {
+            const quint64 sourceKey = cover.cacheKey();
+            if (item->data(Qt::UserRole + 1).toULongLong() == sourceKey)
+                return;
+            item->setData(Qt::UserRole + 1, QVariant::fromValue(sourceKey));
+            item->setIcon(QIcon(cover));
+            // This nested list is not a direct surface child. Resolve its
+            // ancestor surface so glass content snapshots see the new artwork.
+            Liquid::invalidateBackdrop(entry->list->viewport());
+        }
 }
 
 QString HomePage::utcOffsetText(const QDateTime &now)
@@ -285,7 +398,57 @@ QLabel *HomePage::clockLabel() const { return m_clock; }
 QLabel *HomePage::dateLabel() const { return m_date; }
 QLabel *HomePage::timeZoneLabel() const { return m_timezone; }
 
+void HomePage::scheduleResponsiveLayout()
+{
+    if (m_layoutPending)
+        return;
+    m_layoutPending = true;
+    QTimer::singleShot(0, this, [this] {
+        m_layoutPending = false;
+        updateResponsiveLayout();
+    });
+}
+
+void HomePage::updateResponsiveLayout()
+{
+    const int available = qMax(1, m_scroll->viewport()->width() - 48);
+    const bool stacked = !m_kugouOnly && available < 880;
+    m_recommendationsLayout->setDirection(stacked ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+    const int sectionWidth = m_kugouOnly || stacked ? available : (available - 18) / 2;
+    const int cardLimit = m_scroll->viewport()->height() < 620 ? 168 : 188;
+    const int cardWidth = qBound(148, sectionWidth / 4, cardLimit);
+    m_kugou->setCardWidth(cardWidth);
+    m_netease->setCardWidth(cardWidth);
+
+    const bool compactClock = available < 560;
+    auto *clockLayout = static_cast<QBoxLayout *>(m_clockCard->layout());
+    clockLayout->setDirection(compactClock ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+    clockLayout->setSpacing(compactClock ? 8 : 22);
+    QFont digits = m_clock->font();
+    const qreal maximumPoints = m_scroll->viewport()->height() < 600 ? 50.0 : 57.0;
+    digits.setPointSizeF(maximumPoints);
+    const int calendarWidth = qMax(m_year->sizeHint().width(), m_date->sizeHint().width());
+    const int timeWidth = qMax(1, available - 56 - (compactClock ? 0 : calendarWidth + 22));
+    const qreal idealWidth = QFontMetricsF(digits).horizontalAdvance(QStringLiteral("00:00:00"));
+    digits.setPointSizeF(qBound(18.0, maximumPoints * timeWidth / qMax(1.0, idealWidth), maximumPoints));
+    if (digits != m_clock->font())
+        m_clock->setFont(digits);
+}
+
+bool HomePage::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_scroll->viewport() && event->type() == QEvent::Resize)
+        scheduleResponsiveLayout();
+    return QWidget::eventFilter(watched, event);
+}
+
+void HomePage::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    scheduleResponsiveLayout();
+}
+
 void HomePage::showEvent(QShowEvent *event)
-{ QWidget::showEvent(event); refreshClock(); m_clockTimer->start(); }
+{ QWidget::showEvent(event); refreshClock(); m_clockTimer->start(); scheduleResponsiveLayout(); }
 void HomePage::hideEvent(QHideEvent *event)
 { m_clockTimer->stop(); QWidget::hideEvent(event); }

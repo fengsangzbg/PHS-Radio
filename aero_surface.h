@@ -1,6 +1,7 @@
 #pragma once
 
 #include "background_theme.h"
+#include "aero_animation.h"
 
 #include <QColor>
 #include <QElapsedTimer>
@@ -8,6 +9,7 @@
 #include <QPointer>
 #include <QWidget>
 #include <functional>
+#include <memory>
 
 class QPainter;
 class QTimer;
@@ -15,6 +17,8 @@ class QMediaPlayer;
 class QAudioOutput;
 class QVideoSink;
 class QMovie;
+class LatestVideoFrame;
+template <typename T> class QFutureWatcher;
 
 // Native vector reflections keep the surface crisp at every window size.
 class AeroSurface final : public QWidget {
@@ -30,6 +34,9 @@ public:
     // Liquid painters register their real viewport/panel once, so frame updates
     // target visible sampling widgets without walking an item model.
     void registerBackgroundConsumer(QWidget *widget);
+    // Only panels sampling the blurred wallpaper need another repaint when
+    // its worker finishes. Clear song-card viewports stay on source cadence.
+    void registerBlurredBackgroundConsumer(QWidget *widget);
     std::function<void(const QString &)> onBackgroundError;
     // All dynamic background backends share the same visibility/activity policy.
     std::function<void(bool)> onBackgroundActivityChanged;
@@ -48,10 +55,14 @@ protected:
 private:
     QColor m_accent;
     QPointer<QWidget> m_window;
+    QObject *m_displayObserver = nullptr;
     bool m_windowDeactivated = false;
     bool m_backgroundActive = false;
     QTimer *m_motionTimer;
     QElapsedTimer m_frameClock;
+    QElapsedTimer m_presentationClock;
+    Aero::FrameSchedule m_motionSchedule;
+    Aero::FrameSchedule m_videoSchedule;
     qreal m_phase = 0;
     quint64 m_revision = 0;
     mutable QImage m_waterFrame;
@@ -66,18 +77,37 @@ private:
     mutable quint64 m_backgroundTextureFrameRevision = 0;
     mutable QImage m_backgroundBlurred;
     mutable quint64 m_backgroundBlurredFrameRevision = 0;
+    QFutureWatcher<QImage> *m_backgroundBlurWatcher;
+    QTimer *m_backgroundBlurTimer;
+    QTimer *m_backgroundBlurPresentTimer;
+    QElapsedTimer m_backgroundBlurClock;
+    quint64 m_backgroundBlurGeneration = 0;
+    quint64 m_backgroundBlurJobGeneration = 0;
+    quint64 m_backgroundBlurJobFrameRevision = 0;
+    QSize m_backgroundBlurJobSize;
+    bool m_backgroundBlurBusy = false;
+    bool m_backgroundBlurPending = false;
     QMediaPlayer *m_backgroundPlayer = nullptr;
     QAudioOutput *m_backgroundAudio = nullptr;
     QVideoSink *m_backgroundSink = nullptr;
+    QTimer *m_videoFrameTimer;
+    std::shared_ptr<LatestVideoFrame> m_videoFrames;
     QMovie *m_backgroundMovie = nullptr;
     QElapsedTimer m_backgroundFrameClock;
     bool m_backgroundFailed = false;
     QVector<QPointer<QWidget>> m_backgroundConsumers;
+    QVector<QPointer<QWidget>> m_backgroundBlurConsumers;
     void paintWaterFrame(QPainter &painter, const QRectF &bounds,
                          const QPointF &worldOffset) const;
     void updateAnimationState();
+    void updateDisplayRate();
+    void publishVideoFrame();
     void advanceWater();
     void repaintBackground();
+    void repaintGlassConsumers();
+    void invalidateBackgroundBlur();
+    void requestBackgroundBlur();
+    void ensureBackgroundTexture() const;
     bool paintCustomBackground(QPainter &painter, const QRectF &bounds,
                                const QPointF &worldOffset) const;
 };

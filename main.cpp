@@ -9,6 +9,7 @@
 #include "playback_dock.h"
 #include "playback_queue.h"
 #include "song_glass_delegate.h"
+#include "smooth_scroll.h"
 #include "liquid_backdrop.h"
 #include "catalog_search_panel.h"
 #include "home_page.h"
@@ -23,6 +24,7 @@
 #include "release_config.h"
 #include "update_panel.h"
 #include "app_updater.h"
+#include "cover_image_decoder.h"
 
 #include <QApplication>
 #include <QAudioOutput>
@@ -70,8 +72,6 @@
 #include <QPointer>
 #include <QCache>
 #include <QDate>
-#include <QBuffer>
-#include <QImageReader>
 #include <QTemporaryDir>
 #include <QFileInfo>
 #include <QFile>
@@ -89,7 +89,7 @@
 #include <vector>
 
 #ifndef PHSRADIO_VERSION
-#define PHSRADIO_VERSION "0.2.2"
+#define PHSRADIO_VERSION "0.2.3-beta"
 #endif
 
 namespace {
@@ -102,6 +102,19 @@ QString platformKey(MusicPlatform platform)
     case MusicPlatform::Kugou: return QStringLiteral("kugou");
     }
     return {};
+}
+
+QString coverRequestKey(const Track &track)
+{
+    // Include the source URL: refreshed metadata for the same recording may
+    // point to a different cover, while duplicate rows can share one request.
+    return trackKey(track) + QChar(0x1f) + track.coverUrl.toString();
+}
+
+QSize wallpaperRenderPixels(const QWidget *surface)
+{
+    const qreal dpr = surface->devicePixelRatioF();
+    return QSize(qCeil(surface->width() * dpr), qCeil(surface->height() * dpr));
 }
 
 QPixmap placeholderCover()
@@ -151,7 +164,8 @@ public:
         setWindowFlag(Qt::FramelessWindowHint);
         setWindowTitle(QStringLiteral("PHS Radio · 新大地播放器"));
         if (!QCoreApplication::applicationVersion().isEmpty())
-            setWindowTitle(windowTitle() + QStringLiteral(" v") + QCoreApplication::applicationVersion());
+            setWindowTitle(windowTitle() + QStringLiteral(" v")
+                + QString(QCoreApplication::applicationVersion()).replace(QStringLiteral("-beta"), QStringLiteral(" beta")));
         resize(1180, 780);
         setMinimumSize(760, 560);
         QFont uiFont = font();
@@ -284,6 +298,10 @@ public:
         drawerContent->addWidget(m_drawerListSummary);
 
         m_contentPages = new QStackedWidget(central);
+        // Hidden pages' larger preferred heights must not force the restored
+        // window's active home page outside its available viewport.
+        m_contentPages->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+        m_contentPages->setMinimumSize(0, 0);
         m_contentPages->setObjectName(QStringLiteral("contentPages"));
         m_contentPages->setStyleSheet(QStringLiteral("QStackedWidget#contentPages { background: transparent; }"));
         m_homePage = new HomePage(m_contentPages);
@@ -306,6 +324,7 @@ public:
         m_playlistList->setSpacing(6);
         m_playlistList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         m_playlistList->setTextElideMode(Qt::ElideRight);
+        SmoothScrollController::attach(m_playlistList);
         drawerContent->addWidget(m_playlistList, 1);
         m_playlistSearchScope = new QLabel(QStringLiteral("先选择一个歌单"), m_drawer);
         m_playlistSearchScope->setWordWrap(true);
@@ -393,6 +412,24 @@ public:
         m_audioOutput = new QAudioOutput(this);
         m_player = new QMediaPlayer(this);
         m_player->setAudioOutput(m_audioOutput);
+        m_audioSettingsTimer.setSingleShot(true);
+        m_audioSettingsTimer.setTimerType(Qt::PreciseTimer);
+        m_audioSettingsTimer.setInterval(350);
+        connect(&m_audioSettingsTimer, &QTimer::timeout, this, [this] { saveMusicAudioSettings(); });
+        connect(m_audioOutput, &QAudioOutput::volumeChanged, m_dock, [this](float volume) {
+            m_dock->setVolume(volume);
+        });
+        connect(m_audioOutput, &QAudioOutput::mutedChanged, m_dock, [this](bool muted) {
+            m_dock->setMuted(muted);
+        });
+        m_dock->onVolumeChanged = [this](qreal volume) {
+            m_audioOutput->setVolume(volume);
+            m_audioSettingsTimer.start();
+        };
+        m_dock->onMutedChanged = [this](bool muted) {
+            m_audioOutput->setMuted(muted);
+            m_audioSettingsTimer.start();
+        };
         m_mediaDevices = new QMediaDevices(this);
         m_audioRouteTimer.setSingleShot(true);
         m_audioRouteTimer.setInterval(120);
@@ -401,12 +438,14 @@ public:
         connect(&m_audioRouteTimer, &QTimer::timeout,
                 this, [this] { syncDefaultAudioOutput(); });
         m_coverNetwork = new QNetworkAccessManager(this);
+        m_coverApplyTimer.setSingleShot(true);
+        connect(&m_coverApplyTimer, &QTimer::timeout, this, [this] { flushTrackCovers(); });
         m_wallpaperCapture = new WallpaperEngineCapture(this);
         m_wallpaperCapture->setOwnerWindow(static_cast<quintptr>(winId()));
         m_wallpaperResizeTimer.setSingleShot(true);
         m_wallpaperResizeTimer.setInterval(100);
         connect(&m_wallpaperResizeTimer, &QTimer::timeout, this, [this] {
-            m_wallpaperCapture->setRenderSize(m_surface->size() * m_surface->devicePixelRatioF());
+            m_wallpaperCapture->setRenderSize(wallpaperRenderPixels(m_surface));
         });
         m_wallpaperCapture->onFrame = [this](const QImage &frame) { m_surface->setBackgroundFrame(frame); };
         m_wallpaperCapture->onStatusChanged = [this](const QString &status) { statusBar()->showMessage(status, 5000); };
@@ -720,6 +759,13 @@ public:
         };
 
         QSettings appearance;
+        bool validVolume = false;
+        const qreal storedVolume = appearance.value(QStringLiteral("audio/musicVolume"), 1.0).toDouble(&validVolume);
+        const qreal musicVolume = validVolume && qIsFinite(storedVolume) ? qBound<qreal>(0, storedVolume, 1) : 1;
+        m_audioOutput->setVolume(musicVolume);
+        m_audioOutput->setMuted(appearance.value(QStringLiteral("audio/musicMuted"), false).toBool());
+        m_dock->setVolume(musicVolume);
+        m_dock->setMuted(m_audioOutput->isMuted());
         QColor accent = appearance.value(QStringLiteral("appearance/accent"), Aero::defaultAccent()).value<QColor>();
         if (!accent.isValid())
             accent = Aero::defaultAccent();
@@ -761,6 +807,10 @@ public:
 
     ~PlayerWindow() override
     {
+        if (m_audioSettingsTimer.isActive()) {
+            m_audioSettingsTimer.stop();
+            saveMusicAudioSettings();
+        }
         qApp->removeEventFilter(this);
         if (m_wallpaperCapture)
             m_wallpaperCapture->stop();
@@ -826,7 +876,7 @@ protected:
                 showCatalogPanel();
             if (m_wallpaperCapture) {
                 m_wallpaperResizeTimer.start();
-                m_wallpaperCapture->setFrameInterval(Aero::animationInterval(m_surface));
+                m_wallpaperCapture->setFrameRate(Aero::displayRefreshRate(m_surface));
             }
             if (m_drawer && m_toolbarPanel)
                 m_drawer->setTopInset(m_toolbarPanel->geometry().bottom() + 12);
@@ -863,6 +913,14 @@ protected:
 #endif
 
 private:
+    void saveMusicAudioSettings()
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("audio/musicVolume"), m_audioOutput->volume());
+        settings.setValue(QStringLiteral("audio/musicMuted"), m_audioOutput->isMuted());
+        settings.sync();
+    }
+
     void showUpdatePanel()
     {
         m_dock->setInteractionHeld(true);
@@ -884,14 +942,17 @@ private:
         if (qFuzzyCompare(dpr, m_thumbnailDpr))
             return;
         m_thumbnailDpr = dpr;
+        ++m_trackCoverGeneration;
+        m_readyTrackCovers.clear();
         m_requestedCovers.clear();
         m_requestedCatalogCovers.clear();
+        m_catalogCoverIcons.clear();
         m_drawerSignature.clear();
         rebuildDrawerPlaylists();
         loadVisibleTrackCovers();
         loadVisibleCatalogCovers();
-        m_wallpaperCapture->setRenderSize(m_surface->size() * dpr);
-        m_wallpaperCapture->setFrameInterval(Aero::animationInterval(m_surface));
+        m_wallpaperCapture->setRenderSize(wallpaperRenderPixels(m_surface));
+        m_wallpaperCapture->setFrameRate(Aero::displayRefreshRate(m_surface));
     }
 
     void showLibraryPage()
@@ -1044,8 +1105,8 @@ private:
             m_wallpaperCapture->stop();
         if (theme.kind == BackgroundKind::WallpaperEngine && (!sameEngineSource || !m_wallpaperCapture->isRequested()))
             m_wallpaperCapture->start(theme.engineExecutable, theme.sourcePath,
-                                      m_surface->size() * m_surface->devicePixelRatioF());
-        m_wallpaperCapture->setFrameInterval(Aero::animationInterval(m_surface));
+                                      wallpaperRenderPixels(m_surface));
+        m_wallpaperCapture->setFrameRate(Aero::displayRefreshRate(m_surface));
         m_wallpaperCapture->setPaused(!m_surface->backgroundIsActive());
         QSettings appearance;
         saveBackgroundTheme(appearance, theme);
@@ -1073,24 +1134,22 @@ private:
                 reply->abort();
         });
         connect(reply, &QNetworkReply::finished, this, [this, reply, key] {
-            QPixmap image;
-            if (reply->error() == QNetworkReply::NoError) {
-                QByteArray bytes = reply->readAll();
-                QBuffer buffer(&bytes);
-                buffer.open(QIODevice::ReadOnly);
-                QImageReader reader(&buffer);
-                const QSize size = reader.size();
-                if (size.isValid() && qint64(size.width()) * size.height() <= 40000000)
-                    image = QPixmap::fromImage(reader.read());
-            }
+            QByteArray bytes;
+            if (reply->error() == QNetworkReply::NoError)
+                bytes = reply->readAll();
             reply->deleteLater();
-            const auto callbacks = m_highResolutionPending.take(key);
-            if (image.isNull())
-                return;
-            const int cost = qMax(1, int(qint64(image.width()) * image.height() * 4 / 1024));
-            m_highResolutionCovers.insert(key, new QPixmap(image), cost);
-            for (const auto &done : callbacks)
-                done(image);
+            const auto ready = [this, key](const QImage &decoded) {
+                const auto callbacks = m_highResolutionPending.take(key);
+                if (decoded.isNull())
+                    return;
+                const QPixmap image = QPixmap::fromImage(decoded);
+                const int cost = qMax(1, int(qint64(image.width()) * image.height() * 4 / 1024));
+                m_highResolutionCovers.insert(key, new QPixmap(image), cost);
+                for (const auto &done : callbacks)
+                    done(image);
+            };
+            if (!m_coverDecoder.decode(std::move(bytes), {}, ready))
+                ready({});
         });
     }
 
@@ -1308,6 +1367,7 @@ private:
             last = qMin(static_cast<int>(m_catalogTracks.size()) - 1, first + 8);
         const QString query = m_catalogQuery;
         const int generation = m_kugouGeneration;
+        const qreal requestDpr = m_surface->devicePixelRatioF();
         const QPointer<PlayerWindow> guard(this);
         for (int row = first; row <= last; ++row) {
             const CatalogTrack item = m_catalogTracks.at(row);
@@ -1320,12 +1380,20 @@ private:
             if (m_requestedCatalogCovers.contains(key))
                 continue;
             m_requestedCatalogCovers.insert(key);
-            auto apply = [guard, query, generation, key](const QUrl &url) {
+            auto apply = [guard, query, generation, key, requestDpr](const QUrl &url) {
                 if (!guard || url.isEmpty() || generation != guard->m_kugouGeneration || query != guard->m_catalogQuery)
                     return;
-                guard->requestCover(url, [guard, query, generation, key](const QIcon &icon) {
+                if (!qFuzzyCompare(requestDpr, guard->m_surface->devicePixelRatioF()))
+                    return;
+                guard->requestCover(url, [guard, query, generation, key, requestDpr](const QIcon &icon) {
                     if (!guard || generation != guard->m_kugouGeneration || query != guard->m_catalogQuery)
                         return;
+                    if (!qFuzzyCompare(requestDpr, guard->m_surface->devicePixelRatioF()))
+                        return;
+                    if (icon.isNull()) {
+                        guard->m_requestedCatalogCovers.remove(key);
+                        return;
+                    }
                     guard->m_catalogCoverIcons.insert(key, icon);
                     for (int index = 0; index < guard->m_catalogTracks.size(); ++index) {
                         const CatalogTrack &candidate = guard->m_catalogTracks.at(index);
@@ -1849,28 +1917,71 @@ private:
             m_visibleTracks = tracks; // Keep fresh audio/alias metadata even when the UI is unchanged.
             return;
         }
+        const QVector<Track> previous = m_visibleTracks;
+        // Account loading usually appends songs or fills existing metadata.
+        // Preserve those items instead of reallocating the complete library.
+        bool preserveRows = !previous.isEmpty() && tracks.size() >= previous.size();
+        bool rebuildCoverRows = false;
+        for (int row = 0; preserveRows && row < previous.size(); ++row) {
+            preserveRows = trackKey(tracks.at(row)) == trackKey(previous.at(row));
+            rebuildCoverRows |= coverRequestKey(tracks.at(row)) != coverRequestKey(previous.at(row));
+        }
+        rebuildCoverRows |= !preserveRows;
+        const int preservedCount = preserveRows ? previous.size() : 0;
         const QSignalBlocker scrollSignals(m_tracks->verticalScrollBar());
         m_tracks->setUpdatesEnabled(false);
-        m_tracks->setCurrentItem(nullptr);
-        m_tracks->clearSelection();
-        m_tracks->clearContents();
+        if (!preserveRows) {
+            m_tracks->setCurrentItem(nullptr);
+            m_tracks->clearSelection();
+            m_tracks->clearContents();
+        }
         m_tracks->setRowCount(tracks.size());
         m_visibleTracks = tracks;
-        m_requestedCovers.clear();
+        if (rebuildCoverRows) {
+            ++m_trackCoverGeneration;
+            m_coverRows.clear();
+            m_requestedCovers.clear();
+            m_readyTrackCovers.clear();
+        }
         const QIcon placeholder(placeholderCover());
         {
             // Row changes are already notified; suppress per-cell layout work during bulk insertion.
             const QSignalBlocker itemSignals(m_tracks->model());
             for (int row = 0; row < tracks.size(); ++row) {
-                auto *cover = new QTableWidgetItem;
-                cover->setIcon(placeholder);
-                m_tracks->setItem(row, 0, cover);
+                const QString key = coverRequestKey(tracks.at(row));
+                if (rebuildCoverRows || row >= preservedCount)
+                    m_coverRows[key].append(row);
+                if (row >= preservedCount) {
+                    auto *cover = new QTableWidgetItem;
+                    QIcon initialCover = placeholder;
+                    if (!rebuildCoverRows) {
+                        // A duplicate appended after its shared request already
+                        // completed must inherit the resolved icon immediately.
+                        const auto existingRows = m_coverRows.constFind(key);
+                        if (existingRows != m_coverRows.cend() && !existingRows->isEmpty()
+                            && existingRows->first() < row) {
+                            const auto *existing = m_tracks->item(existingRows->first(), 0);
+                            if (existing && !existing->icon().isNull())
+                                initialCover = existing->icon();
+                        }
+                    }
+                    cover->setIcon(initialCover);
+                    m_tracks->setItem(row, 0, cover);
+                } else if (key != coverRequestKey(previous.at(row))) {
+                    m_tracks->item(row, 0)->setIcon(placeholder);
+                }
                 for (int column = 1; column < 4; ++column) {
                     const QString text = column == 1 ? tracks.at(row).title
                         : column == 2 ? tracks.at(row).artist : tracks.at(row).album;
-                    auto *item = new QTableWidgetItem(text);
-                    item->setToolTip(text);
-                    m_tracks->setItem(row, column, item);
+                    QTableWidgetItem *item = row < preservedCount ? m_tracks->item(row, column) : nullptr;
+                    if (!item) {
+                        item = new QTableWidgetItem(text);
+                        item->setToolTip(text);
+                        m_tracks->setItem(row, column, item);
+                    } else if (item->text() != text) {
+                        item->setText(text);
+                        item->setToolTip(text);
+                    }
                 }
             }
         }
@@ -1879,7 +1990,8 @@ private:
         for (int row = 0; row < qMin(64, tracks.size()); ++row)
             artistWidth = qMax(artistWidth, metrics.horizontalAdvance(tracks.at(row).artist) + 28);
         m_tracks->setColumnWidth(2, qBound(140, artistWidth, 260));
-        m_tracks->verticalScrollBar()->setValue(0);
+        if (!preserveRows)
+            m_tracks->verticalScrollBar()->setValue(0);
         m_tracks->setUpdatesEnabled(true);
         Liquid::invalidateBackdrop(m_tracks);
         QTimer::singleShot(0, this, [this] { loadVisibleTrackCovers(); });
@@ -1887,19 +1999,22 @@ private:
 
     void loadPlaylistCover(const Playlist &playlist)
     {
-        auto applyCover = [this, playlistId = playlist.id, name = playlist.name](const QUrl &url) {
-            if (url.isEmpty())
+        const qreal requestDpr = m_surface->devicePixelRatioF();
+        auto applyCover = [this, playlistId = playlist.id, name = playlist.name, requestDpr](const QUrl &url) {
+            if (url.isEmpty() || !qFuzzyCompare(requestDpr, m_surface->devicePixelRatioF()))
                 return;
-            requestCover(url, [this, playlistId, name](const QIcon &icon) {
-            for (int row = 0; row < m_playlistList->count(); ++row) {
-                if (row < m_visiblePlaylists.size()
-                    && m_visiblePlaylists.at(row).id == playlistId
-                    && m_visiblePlaylists.at(row).name == name) {
-                        m_playlistList->item(row)->setIcon(icon);
-                    Liquid::invalidateBackdrop(m_playlistList);
+            requestCover(url, [this, playlistId, name, requestDpr](const QIcon &icon) {
+                if (icon.isNull() || !qFuzzyCompare(requestDpr, m_surface->devicePixelRatioF()))
                     return;
+                for (int row = 0; row < m_playlistList->count(); ++row) {
+                    if (row < m_visiblePlaylists.size()
+                        && m_visiblePlaylists.at(row).id == playlistId
+                        && m_visiblePlaylists.at(row).name == name) {
+                        m_playlistList->item(row)->setIcon(icon);
+                        Liquid::invalidateBackdrop(m_playlistList);
+                        return;
+                    }
                 }
-            }
             });
         };
         if (!playlist.coverUrl.isEmpty()) {
@@ -1913,34 +2028,37 @@ private:
     {
         if (m_tracks->rowCount() == 0)
             return;
-        int firstRow = m_tracks->rowAt(m_tracks->horizontalHeader()->height() + 1);
+        int firstRow = m_tracks->rowAt(0);
         if (firstRow < 0)
             firstRow = 0;
-        int lastRow = m_tracks->rowAt(m_tracks->height() - 1);
+        int lastRow = m_tracks->rowAt(m_tracks->viewport()->height() - 1);
         if (lastRow < firstRow)
             lastRow = qMin(m_tracks->rowCount() - 1, firstRow + 12);
 
         for (int row = firstRow; row <= lastRow && row < m_visibleTracks.size(); ++row) {
             const Track track = m_visibleTracks.at(row);
-            const QString requestKey = track.id.isEmpty()
-                ? QStringLiteral("%1|%2|%3").arg(track.title, track.artist, track.album)
-                : track.id;
+            const QString requestKey = coverRequestKey(track);
             if (m_requestedCovers.contains(requestKey))
                 continue;
             m_requestedCovers.insert(requestKey);
-            auto applyCover = [this, id = track.id, title = track.title,
-                               artist = track.artist, album = track.album](const QUrl &url) {
-                if (url.isEmpty())
+            const quint64 generation = m_trackCoverGeneration;
+            auto applyCover = [this, requestKey, generation](const QUrl &url) {
+                if (generation != m_trackCoverGeneration)
                     return;
-                requestCover(url, [this, id, title, artist, album](const QIcon &icon) {
-                for (int current = 0; current < m_visibleTracks.size(); ++current) {
-                    const Track &candidate = m_visibleTracks.at(current);
-                    const bool sameTrack = !id.isEmpty() ? candidate.id == id
-                        : candidate.title == title && candidate.artist == artist && candidate.album == album;
-                    if (sameTrack && m_tracks->item(current, 0))
-                        m_tracks->item(current, 0)->setIcon(icon);
+                if (url.isEmpty()) {
+                    m_requestedCovers.remove(requestKey);
+                    return;
                 }
-                Liquid::invalidateBackdrop(m_tracks);
+                requestCover(url, [this, requestKey, generation](const QIcon &icon) {
+                    if (generation != m_trackCoverGeneration)
+                        return;
+                    if (icon.isNull()) {
+                        m_requestedCovers.remove(requestKey);
+                        return;
+                    }
+                    m_readyTrackCovers.insert(requestKey, icon);
+                    if (!m_coverApplyTimer.isActive())
+                        m_coverApplyTimer.start(Aero::animationInterval(m_tracks));
                 });
             };
             if (!track.coverUrl.isEmpty()) {
@@ -1951,6 +2069,26 @@ private:
         }
     }
 
+    void flushTrackCovers()
+    {
+        const auto ready = std::move(m_readyTrackCovers);
+        m_readyTrackCovers.clear();
+        bool changed = false;
+        for (auto cover = ready.cbegin(); cover != ready.cend(); ++cover) {
+            const auto rows = m_coverRows.constFind(cover.key());
+            if (rows == m_coverRows.cend())
+                continue;
+            for (int row : rows.value()) {
+                if (auto *item = m_tracks->item(row, 0)) {
+                    item->setIcon(cover.value());
+                    changed = true;
+                }
+            }
+        }
+        if (changed)
+            Liquid::invalidateBackdrop(m_tracks);
+    }
+
     void requestCover(const QUrl &url, std::function<void(const QIcon &)> callback)
     {
         const qreal dpr = m_surface->devicePixelRatioF();
@@ -1959,26 +2097,38 @@ private:
             callback(*cached);
             return;
         }
+        if (m_pendingCovers.contains(key)) {
+            m_pendingCovers[key].push_back(std::move(callback));
+            return;
+        }
+        m_pendingCovers[key].push_back(std::move(callback));
         QNetworkRequest request(url);
         request.setTransferTimeout(8000);
         QNetworkReply *reply = m_coverNetwork->get(request);
-        connect(reply, &QNetworkReply::finished, this, [this, reply, key, dpr, callback = std::move(callback)] {
-            QPixmap source;
+        connect(reply, &QNetworkReply::downloadProgress, reply, [reply](qint64 received, qint64 total) {
+            if (received > 16 * 1024 * 1024 || total > 16 * 1024 * 1024)
+                reply->abort();
+        });
+        connect(reply, &QNetworkReply::finished, this, [this, reply, key, dpr] {
+            QByteArray bytes;
             if (reply->error() == QNetworkReply::NoError)
-                source.loadFromData(reply->readAll());
+                bytes = reply->readAll();
             reply->deleteLater();
-            if (source.isNull())
-                return;
             const int pixels = qCeil(80 * dpr);
-            QPixmap scaled = source.scaled(QSize(pixels, pixels), Qt::KeepAspectRatioByExpanding,
-                                           Qt::SmoothTransformation);
-            const int x = (scaled.width() - pixels) / 2;
-            const int y = (scaled.height() - pixels) / 2;
-            QPixmap thumbnail = scaled.copy(x, y, pixels, pixels);
-            thumbnail.setDevicePixelRatio(dpr);
-            const QIcon icon(thumbnail);
-            m_coverCache.insert(key, new QIcon(icon), qMax(1, pixels * pixels * 4 / 1024));
-            callback(icon);
+            const auto ready = [this, key, dpr, pixels](const QImage &decoded) {
+                QIcon icon;
+                if (!decoded.isNull()) {
+                    QPixmap thumbnail = QPixmap::fromImage(decoded);
+                    thumbnail.setDevicePixelRatio(dpr);
+                    icon = QIcon(thumbnail);
+                    m_coverCache.insert(key, new QIcon(icon), qMax(1, pixels * pixels * 4 / 1024));
+                }
+                const auto callbacks = m_pendingCovers.take(key);
+                for (const auto &done : callbacks)
+                    done(icon);
+            };
+            if (!m_coverDecoder.decode(std::move(bytes), QSize(pixels, pixels), ready))
+                ready({});
         });
     }
 
@@ -2195,6 +2345,7 @@ private:
     QMediaPlayer *m_player = nullptr;
     QMediaDevices *m_mediaDevices = nullptr;
     QTimer m_audioRouteTimer;
+    QTimer m_audioSettingsTimer;
     bool m_audioRouteInterrupted = false;
     PlaybackDock *m_dock = nullptr;
     PlaybackQueue m_playbackQueue;
@@ -2206,10 +2357,16 @@ private:
     int m_playRequest = 0;
     QNetworkAccessManager *m_coverNetwork = nullptr;
     QCache<QString, QIcon> m_coverCache{32 * 1024};
+    QHash<QString, std::vector<std::function<void(const QIcon &)>>> m_pendingCovers;
     qreal m_thumbnailDpr = 0;
     QSet<QString> m_requestedCovers;
+    quint64 m_trackCoverGeneration = 0;
+    QHash<QString, QVector<int>> m_coverRows;
+    QHash<QString, QIcon> m_readyTrackCovers;
+    QTimer m_coverApplyTimer;
     QCache<QString, QPixmap> m_highResolutionCovers{64 * 1024};
     QHash<QString, std::vector<std::function<void(const QPixmap &)>>> m_highResolutionPending;
+    CoverImageDecoder m_coverDecoder;
 };
 
 int main(int argc, char *argv[])

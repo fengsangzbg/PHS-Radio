@@ -85,6 +85,101 @@ void verifyLocalClock()
           "Clearing an account's recommendations must not affect another platform.");
 }
 
+void verifyResponsiveRecommendations()
+{
+    HomePage home;
+    QVector<Track> tracks;
+    for (int row = 0; row < 30; ++row) {
+        Track track;
+        track.title = QStringLiteral("每日推荐歌曲 %1 — 完整标题可通过提示查看").arg(row);
+        track.artist = QStringLiteral("歌手 %1").arg(row);
+        tracks.append(track);
+    }
+    home.setRecommendations(MusicPlatform::Kugou, tracks);
+    home.setRecommendations(MusicPlatform::NetEaseCloud, tracks);
+    home.resize(1180, 840);
+    home.show();
+    waitForEvents(80);
+    auto *scroll = home.findChild<QScrollArea *>(QStringLiteral("homeScrollArea"));
+    auto *kugou = home.findChild<QListWidget *>(QStringLiteral("kugouRecommendations"));
+    auto *netease = home.findChild<QListWidget *>(QStringLiteral("neteaseRecommendations"));
+    check(scroll && kugou && netease, "The home page must expose its scrollable recommendation strips.");
+    check(!kugou->isWrapping() && kugou->horizontalScrollBar()->maximum() > 0,
+          "All daily recommendations must remain reachable in one horizontal strip.");
+
+    home.showMaximized();
+    waitForEvents(50);
+    home.showNormal();
+    home.resize(760, 420);
+    waitForEvents(100);
+    check(home.width() == 760 && home.height() == 420,
+          "Restoring a compact window must not be blocked by large recommendation minimum hints.");
+    check(home.rect().contains(QRect(scroll->pos(), scroll->size()))
+          && scroll->verticalScrollBar()->maximum() > 0,
+          "Compact windows must scroll the complete home page instead of clipping its content.");
+    const QRect first = kugou->visualItemRect(kugou->item(0));
+    const QRect lastBeforeScroll = kugou->visualItemRect(kugou->item(29));
+    check(first.height() <= kugou->viewport()->height()
+          && first.top() == lastBeforeScroll.top(),
+          "Recommendation covers and both text lines must fit a complete single-row strip.");
+    check(netease->mapTo(scroll->widget(), QPoint()).y()
+              > kugou->mapTo(scroll->widget(), QPoint()).y(),
+          "Narrow two-platform home pages must stack their recommendation sections.");
+    scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+    kugou->scrollToItem(kugou->item(29), QAbstractItemView::PositionAtCenter);
+    QCoreApplication::processEvents();
+    check(kugou->viewport()->rect().contains(kugou->visualItemRect(kugou->item(29))),
+          "The last of thirty recommendations must be fully reachable horizontally.");
+    check(netease->mapTo(scroll->viewport(), QPoint()).y() < scroll->viewport()->height(),
+          "Scrolling a short window must reveal the second platform's recommendations.");
+
+    // Render a non-square source cover and measure its visible central rows and
+    // columns: the artwork itself must retain a square card aperture.
+    QPixmap artwork(300, 150);
+    artwork.fill(Qt::magenta);
+    home.setCover(MusicPlatform::Kugou, 0, artwork);
+    QStyleOptionViewItem option;
+    option.initFrom(kugou);
+    const QSize itemSize = kugou->itemDelegate()->sizeHint(option, kugou->model()->index(0, 0));
+    option.rect = QRect(QPoint(), itemSize);
+    QImage image(itemSize, QImage::Format_RGB32);
+    image.fill(Qt::black);
+    QPainter painter(&image);
+    kugou->itemDelegate()->paint(&painter, option, kugou->model()->index(0, 0));
+    painter.end();
+    const int middle = 14 + (itemSize.width() - 28) / 2;
+    int coloredWidth = 0, coloredHeight = 0;
+    for (int x = 0; x < image.width(); ++x)
+        coloredWidth += image.pixelColor(x, middle) == QColor(Qt::magenta);
+    for (int y = 0; y < image.height(); ++y)
+        coloredHeight += image.pixelColor(middle, y) == QColor(Qt::magenta);
+    check(coloredWidth > 100 && std::abs(coloredWidth - coloredHeight) <= 1,
+          "Recommendation artwork must remain square after resizing, even for rectangular source images.");
+
+    home.setKugouOnly(true);
+    home.resize(360, 420);
+    waitForEvents(80);
+    check(QFontMetrics(home.clockLabel()->font()).horizontalAdvance(home.clockLabel()->text())
+              <= home.clockLabel()->width(),
+          "The digital clock must resize to fit compact page widths.");
+    kugou->horizontalScrollBar()->setValue(0);
+    const QPoint center = kugou->viewport()->rect().center();
+    QWheelEvent horizontalWheel(QPointF(center), QPointF(kugou->viewport()->mapToGlobal(center)),
+        QPoint(), QPoint(0, -120), Qt::NoButton, Qt::ShiftModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(kugou->viewport(), &horizontalWheel);
+    check(kugou->horizontalScrollBar()->value() > 0,
+          "Shift and the mouse wheel must reach more recommendations horizontally.");
+    const int horizontalPosition = kugou->horizontalScrollBar()->value();
+    scroll->verticalScrollBar()->setValue(0);
+    QWheelEvent verticalWheel(QPointF(center), QPointF(kugou->viewport()->mapToGlobal(center)),
+        QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(kugou->viewport(), &verticalWheel);
+    QCoreApplication::processEvents();
+    check(scroll->verticalScrollBar()->value() > 0
+              && kugou->horizontalScrollBar()->value() == horizontalPosition,
+          "Ordinary vertical wheel input over recommendations must scroll the whole home page.");
+}
+
 void verifyRecordAndLyrics()
 {
     SongPage page;
@@ -183,6 +278,7 @@ int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
     verifyLocalClock();
+    verifyResponsiveRecommendations();
     verifyRecordAndLyrics();
     verifyDockPageLinks();
     return 0;

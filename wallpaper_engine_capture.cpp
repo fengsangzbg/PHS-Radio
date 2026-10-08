@@ -1,4 +1,5 @@
 #include "wallpaper_engine_capture.h"
+#include "video_frame_image.h"
 
 #include <QCoreApplication>
 #include <QCapturableWindow>
@@ -11,10 +12,16 @@
 #include <QProcess>
 #include <QSaveFile>
 #include <QPoint>
+#include <QPointer>
+#include <QPromise>
+#include <QThreadPool>
+#include <QThread>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QVideoSink>
 #include <QWindowCapture>
+#include <QWidget>
+#include <cmath>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -24,6 +31,23 @@
 #endif
 
 namespace {
+int frameRateFromConfiguration(const QJsonObject &configuration, const QString &user,
+                               QString *error)
+{
+    const QJsonValue value = configuration.value(user).toObject()
+        .value(QStringLiteral("general")).toObject()
+        .value(QStringLiteral("user")).toObject().value(QStringLiteral("fps"));
+    const double rate = value.toDouble(-1);
+    if (user.isEmpty() || !value.isDouble() || !std::isfinite(rate)
+        || rate < 1 || rate > 10000 || std::floor(rate) != rate) {
+        if (error)
+            *error = QStringLiteral("未能读取当前用户的 Wallpaper Engine 画面帧率，请在其设置中确认。");
+        return 0;
+    }
+    if (error) error->clear();
+    return int(rate);
+}
+
 QPoint rendererParkingPosition()
 {
 #ifdef Q_OS_WIN
@@ -185,8 +209,24 @@ WallpaperEngineCapture::WallpaperEngineCapture(QObject *parent) : QObject(parent
 {
     m_session = new QMediaCaptureSession(this);
     m_capture = new QWindowCapture(this);
-    m_sink = new QVideoSink(this);
+    m_sink = new QVideoSink;
     m_command = new QProcess(this);
+    m_rgbWatcher = new QFutureWatcher<QImage>(this);
+    connect(m_rgbWatcher, &QFutureWatcher<QImage>::finished, this, [this] {
+        const QImage image = m_rgbWatcher->result();
+        m_rgbConversionBusy = false;
+        if (m_rgbJobGeneration == m_conversionGeneration && m_requested && !m_paused && !image.isNull())
+            m_pendingImage = image;
+        // Completion never publishes or rearms the frame timer. Presentation
+        // belongs to the next display tick. Start the newest compatible frame
+        // immediately so conversion does not wait an extra presentation interval.
+        // An incompatible frame must remain available to the GUI-only fallback.
+        if (m_requested && !m_paused) {
+            const QVideoFrame frame = m_frames->takeIf(VideoFrames::canConvertRgb);
+            if (frame.isValid())
+                startRgbConversion(frame);
+        }
+    });
     m_command->setStandardOutputFile(QProcess::nullDevice());
     m_command->setStandardErrorFile(QProcess::nullDevice());
 #ifdef Q_OS_WIN
@@ -196,9 +236,23 @@ WallpaperEngineCapture::WallpaperEngineCapture(QObject *parent) : QObject(parent
 #endif
     m_session->setWindowCapture(m_capture);
     m_session->setVideoSink(m_sink);
+    // Qt's upstream capture connection follows the platform sink's affinity.
+    // Attach on the owner thread first, then move the parentless sink and its
+    // platform children so incoming frame events cannot queue behind GUI paint.
+    m_sinkThread = new QThread(this);
+    m_sinkThread->setObjectName(QStringLiteral("wallpaperFrameSink"));
+    m_sink->moveToThread(m_sinkThread);
+    m_sinkThread->start();
     m_findTimer.setInterval(120);
     m_frameTimer.setInterval(16);
     m_frameTimer.setTimerType(Qt::PreciseTimer);
+    m_frameTimer.setSingleShot(true);
+    if (auto *widget = qobject_cast<QWidget *>(parent)) {
+        setFrameRate(Aero::displayRefreshRate(widget));
+        m_displayObserver = Aero::observeDisplayRefresh(widget, this, [this, widget = QPointer<QWidget>(widget)] {
+            if (widget) setFrameRate(Aero::displayRefreshRate(widget));
+        });
+    }
     m_guardTimer.setInterval(250);
     m_timeout.setSingleShot(true);
     connect(&m_findTimer, &QTimer::timeout, this, [this] { findWindow(); });
@@ -210,12 +264,11 @@ WallpaperEngineCapture::WallpaperEngineCapture(QObject *parent) : QObject(parent
     connect(&m_timeout, &QTimer::timeout, this, [this] {
         fail(QStringLiteral("Wallpaper Engine 未输出动态画面，请先启动它，再重新连接背景。"));
     });
-    connect(m_sink, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame &frame) {
-        if (m_requested && !m_paused && frame.isValid()) {
-            m_latestFrame = frame;
-            m_hasFrame = true;
-        }
-    });
+    // Backend frames replace a single buffer directly. A stalled GUI must not
+    // accumulate queued callbacks and retained capture textures for old frames.
+    connect(m_sink, &QVideoSink::videoFrameChanged, this,
+            [frames = m_frames](const QVideoFrame &frame) { frames->offer(frame); },
+            Qt::DirectConnection);
     connect(m_capture, &QWindowCapture::errorOccurred, this,
             [this](QWindowCapture::Error error, const QString &detail) {
         if (m_requested && error != QWindowCapture::NoError)
@@ -229,10 +282,51 @@ WallpaperEngineCapture::WallpaperEngineCapture(QObject *parent) : QObject(parent
 
 WallpaperEngineCapture::~WallpaperEngineCapture()
 {
+    delete m_displayObserver;
     onError = {};
     onStatusChanged = {};
     onFrame = {};
     stop();
+    // The capture grabber has stopped and its queued sink frames are drained.
+    // Return the sink to the session's thread before detaching/deleting it.
+    // Independently owned RGB conversion jobs never participate in this wait.
+    if (m_sink->thread() != thread()) {
+        const auto returnSink = [sink = m_sink, owner = thread()] {
+            sink->moveToThread(owner);
+        };
+        if (m_sink->thread() == QThread::currentThread()) {
+            returnSink();
+        } else {
+            if (!m_sinkThread->isRunning())
+                m_sinkThread->start();
+            QMetaObject::invokeMethod(m_sink, returnSink, Qt::BlockingQueuedConnection);
+        }
+    }
+    m_session->setVideoSink(nullptr);
+    delete m_sink;
+    m_sink = nullptr;
+    m_sinkThread->quit();
+    m_sinkThread->wait();
+}
+
+int WallpaperEngineCapture::configuredFrameRate(const QString &executable, QString *error)
+{
+    const QFileInfo binary(executable);
+    QFile file(binary.dir().filePath(QStringLiteral("config.json")));
+    if (!binary.isFile() || !file.open(QIODevice::ReadOnly) || file.size() > 4 * 1024 * 1024) {
+        if (error) *error = QStringLiteral("无法读取 Wallpaper Engine 配置文件。");
+        return 0;
+    }
+    const QByteArray bytes = file.read(4 * 1024 * 1024 + 1);
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
+    if (bytes.size() > 4 * 1024 * 1024 || parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (error) *error = QStringLiteral("Wallpaper Engine 配置文件暂时不可用，请稍后刷新。");
+        return 0;
+    }
+    QString user = qEnvironmentVariable("USERNAME");
+    if (user.isEmpty()) user = qEnvironmentVariable("USER");
+    return frameRateFromConfiguration(document.object(), user, error);
 }
 
 void WallpaperEngineCapture::start(const QString &executable, const QString &projectPath, QSize size)
@@ -317,10 +411,15 @@ void WallpaperEngineCapture::findWindow()
                 return;
             }
             m_capture->setWindow(window);
-            if (!m_paused)
+            if (!m_paused) {
+                m_frames->reset(true);
                 m_capture->start();
-            if (!m_paused)
-                m_frameTimer.start();
+            }
+            if (!m_paused) {
+                m_frameClock.start();
+                m_frameSchedule.reset(0);
+                m_frameTimer.start(m_frameSchedule.delayMs(0));
+            }
             m_guardTimer.start();
 #ifdef Q_OS_WIN
             if (m_paused)
@@ -397,21 +496,76 @@ bool WallpaperEngineCapture::parkWindow()
 
 void WallpaperEngineCapture::publishFrame()
 {
-    if (!m_hasFrame || m_paused || !m_requested)
+    if (m_paused || !m_requested)
         return;
-    m_hasFrame = false;
-    QImage image = m_latestFrame.toImage();
-    m_latestFrame = {};
+    const qint64 now = m_frameClock.isValid() ? m_frameClock.nsecsElapsed() : 0;
+    if (!m_frameSchedule.advance(now)) {
+        m_frameTimer.start(m_frameSchedule.delayMs(now));
+        return;
+    }
+    // Arm before callbacks: a callback that pauses/stops the backend cancels
+    // this timer, and the single latest-frame mailbox cannot grow while busy.
+    m_frameTimer.start(m_frameSchedule.delayMs(now));
+    QImage image = std::exchange(m_pendingImage, QImage{});
+    if (!m_rgbConversionBusy) {
+        const QVideoFrame frame = m_frames->take();
+        if (frame.isValid()) {
+            if (VideoFrames::canConvertRgb(frame)) {
+                startRgbConversion(frame);
+            } else {
+                image = VideoFrames::toImage(frame);
+            }
+        }
+    }
     if (image.isNull())
         return;
+    const quint64 generation = m_conversionGeneration;
+    const QPointer<WallpaperEngineCapture> guard(this);
     m_timeout.stop();
     if (!m_announced) {
         m_announced = true;
-        if (onStatusChanged)
-            onStatusChanged(QStringLiteral("Wallpaper Engine 动态背景已连接"));
+        const auto status = onStatusChanged;
+        if (status)
+            status(QStringLiteral("Wallpaper Engine 动态背景已连接"));
+        if (!guard || generation != m_conversionGeneration || m_paused || !m_requested)
+            return;
     }
-    if (onFrame)
-        onFrame(image);
+    const auto callback = onFrame;
+    if (callback)
+        callback(image);
+}
+
+void WallpaperEngineCapture::startRgbConversion(const QVideoFrame &frame)
+{
+    m_rgbConversionBusy = true;
+    m_rgbJobGeneration = m_conversionGeneration;
+    auto promise = std::make_shared<QPromise<QImage>>();
+    promise->start();
+    m_rgbWatcher->setFuture(promise->future());
+    QThreadPool::globalInstance()->start([promise, frame] {
+        // Only conservatively matched CPU RGB reaches this worker.
+        // Mapping failure returns null; Qt/QRhi fallback stays GUI-only.
+        promise->addResult(VideoFrames::toRgbImage(frame));
+        promise->finish();
+    });
+}
+
+void WallpaperEngineCapture::resetConvertedFrames()
+{
+    ++m_conversionGeneration;
+    m_pendingImage = {};
+    // A running job owns its frame/promise independently. Keep busy until its
+    // watcher finishes so a quick pause/restart cannot enqueue another job.
+}
+
+void WallpaperEngineCapture::drainSinkFrames()
+{
+    if (!m_sink || !m_sinkThread || !m_sinkThread->isRunning()
+        || m_sink->thread() == QThread::currentThread())
+        return;
+    // A synchronous grabber stop precedes this FIFO barrier. Old source frames
+    // are discarded with the mailbox disabled, before a later resume enables it.
+    QMetaObject::invokeMethod(m_sink, [] {}, Qt::BlockingQueuedConnection);
 }
 
 void WallpaperEngineCapture::setPaused(bool paused)
@@ -423,9 +577,14 @@ void WallpaperEngineCapture::setPaused(bool paused)
         return;
     }
     m_paused = paused;
+    resetConvertedFrames();
+    m_frames->reset(m_requested && !paused);
+    if (paused) {
+        m_capture->stop();
+        drainSinkFrames();
+        m_frames->reset(false);
+    }
     if (m_requested && !m_findTimer.isActive()) {
-        if (paused)
-            m_capture->stop();
 #ifdef Q_OS_WIN
         const HWND handle = reinterpret_cast<HWND>(m_nativeWindow);
         if (isNamedRenderer(handle, m_windowName)) {
@@ -446,10 +605,10 @@ void WallpaperEngineCapture::setPaused(bool paused)
     if (paused) {
         m_frameTimer.stop();
         m_timeout.stop();
-        m_latestFrame = {};
-        m_hasFrame = false;
     } else if (m_requested) {
-        m_frameTimer.start();
+        m_frameClock.start();
+        m_frameSchedule.reset(0);
+        m_frameTimer.start(m_frameSchedule.delayMs(0));
         if (!m_announced)
             m_timeout.start(18000);
     }
@@ -457,7 +616,12 @@ void WallpaperEngineCapture::setPaused(bool paused)
 
 void WallpaperEngineCapture::setRenderSize(QSize pixels)
 {
-    m_renderSize = pixels.expandedTo(QSize(640, 360));
+    const QSize normalized = pixels.expandedTo(QSize(640, 360));
+    if (m_renderSize != normalized) {
+        m_renderSize = normalized;
+        resetConvertedFrames();
+        m_frames->reset(m_requested && !m_paused);
+    }
 #ifdef Q_OS_WIN
     const HWND handle = reinterpret_cast<HWND>(m_nativeWindow);
     if (isNamedRenderer(handle, m_windowName)) {
@@ -477,7 +641,17 @@ void WallpaperEngineCapture::setRenderSize(QSize pixels)
 
 void WallpaperEngineCapture::setFrameInterval(int milliseconds)
 {
-    m_frameTimer.setInterval(qBound(7, milliseconds, 33));
+    setFrameRate(1000.0 / qBound(1, milliseconds, 34));
+}
+
+void WallpaperEngineCapture::setFrameRate(qreal framesPerSecond)
+{
+    const qint64 now = m_frameClock.isValid() ? m_frameClock.nsecsElapsed() : 0;
+    m_frameSchedule.setRefreshRate(framesPerSecond, now);
+    if (m_frameTimer.isActive())
+        m_frameTimer.start(m_frameSchedule.delayMs(now));
+    else
+        m_frameTimer.setInterval(m_frameSchedule.delayMs(now));
 }
 
 bool WallpaperEngineCapture::isRunning() const
@@ -494,13 +668,16 @@ void WallpaperEngineCapture::stop()
 {
     m_requested = false;
     m_announced = false;
+    resetConvertedFrames();
+    m_frames->reset(false);
     m_findTimer.stop();
     m_frameTimer.stop();
+    m_frameClock.invalidate();
     m_guardTimer.stop();
     m_timeout.stop();
     m_capture->stop();
-    m_latestFrame = {};
-    m_hasFrame = false;
+    drainSinkFrames();
+    m_frames->reset(false);
 #ifdef Q_OS_WIN
     const HWND handle = reinterpret_cast<HWND>(m_nativeWindow);
     if (isNamedRenderer(handle, m_windowName)) {

@@ -33,10 +33,14 @@ int main(int argc, char **argv)
     app.processEvents();
     check(window.m_tracks->rowCount() == tracks.size());
     check(window.m_tracks->item(tracks.size() - 1, 1)->text() == tracks.last().title);
+    QTableWidgetItem *lastSongItem = window.m_tracks->item(tracks.size() - 1, 1);
+    QTableWidgetItem *firstCoverItem = window.m_tracks->item(0, 0);
     tracks.last().title = QStringLiteral("Updated last song");
     // Refreshing the same large row count previously stalled the UI thread.
     window.setTracks(tracks);
     app.processEvents();
+    check(window.m_tracks->item(tracks.size() - 1, 1) == lastSongItem);
+    check(window.m_tracks->item(0, 0) == firstCoverItem);
     window.m_tracks->setCurrentCell(tracks.size() - 1, 1);
     check(window.m_tracks->currentRow() == tracks.size() - 1);
     check(window.m_tracks->currentItem()->text() == tracks.last().title);
@@ -51,10 +55,62 @@ int main(int argc, char **argv)
     check(window.m_tracks->verticalScrollBar()->value() == scrollPosition);
     check(window.m_visibleTracks.last().audioUrl == tracks.last().audioUrl);
     check(window.m_visibleTracks.last().searchAliases == tracks.last().searchAliases);
+
+    Track appended;
+    appended.id = QStringLiteral("appended-song");
+    appended.title = QStringLiteral("Appended song");
+    tracks.append(appended);
+    window.setTracks(tracks);
+    app.processEvents();
+    check(window.m_tracks->rowCount() == tracks.size());
+    check(window.m_tracks->item(tracks.size() - 2, 1) == selectedItem);
+    check(window.m_tracks->currentItem() == selectedItem);
+    check(window.m_tracks->item(tracks.size() - 1, 1)->text() == appended.title);
+
+    // Duplicate rows share one row lookup and receive the same completed icon.
+    Track duplicate = tracks.first();
+    duplicate.coverUrl = QUrl(QStringLiteral("https://example.invalid/shared-cover"));
+    window.setTracks({duplicate, tracks.last(), duplicate});
+    QPixmap blue(80, 80);
+    blue.fill(Qt::blue);
+    const QIcon completedCover(blue);
+    window.m_readyTrackCovers.insert(coverRequestKey(duplicate), completedCover);
+    window.flushTrackCovers();
+    check(window.m_tracks->item(0, 0)->icon().cacheKey() == completedCover.cacheKey());
+    check(window.m_tracks->item(2, 0)->icon().cacheKey() == completedCover.cacheKey());
+
+    // Appending a duplicate after the original request was applied must reuse
+    // its cover: the shared request marker intentionally prevents another fetch.
+    const QString sharedCoverKey = coverRequestKey(duplicate);
+    window.m_requestedCovers.insert(sharedCoverKey);
+    const quint64 coverGeneration = window.m_trackCoverGeneration;
+    QVector<Track> appendedDuplicate = window.m_visibleTracks;
+    appendedDuplicate.append(duplicate);
+    window.setTracks(appendedDuplicate);
+    app.processEvents();
+    check(window.m_trackCoverGeneration == coverGeneration);
+    check(window.m_readyTrackCovers.isEmpty());
+    check(window.m_requestedCovers.contains(sharedCoverKey));
+    check(window.m_tracks->item(3, 0)->icon().cacheKey() == completedCover.cacheKey());
+    const QString thumbnailKey = duplicate.coverUrl.toString() + QLatin1Char('|')
+        + QString::number(qCeil(80 * window.m_surface->devicePixelRatioF()));
+    check(!window.m_pendingCovers.contains(thumbnailKey));
+
+    window.m_readyTrackCovers.insert(coverRequestKey(duplicate), completedCover);
     window.setTracks({tracks.last()});
     app.processEvents();
+    check(window.m_readyTrackCovers.isEmpty()); // Switching lists discards stale queued covers.
     check(window.m_tracks->rowCount() == 1);
     check(window.m_tracks->item(0, 1)->text() == tracks.last().title);
+
+    // A monitor density change must discard catalog icons as well as request
+    // markers; otherwise the URL cache would keep displaying old-size pixels.
+    window.m_catalogCoverIcons.insert(QStringLiteral("obsolete-dpr-cover"), completedCover);
+    window.m_requestedCatalogCovers.insert(QStringLiteral("obsolete-dpr-cover"));
+    window.m_thumbnailDpr = window.m_surface->devicePixelRatioF() + 1;
+    window.refreshDevicePixelRatioAssets();
+    check(window.m_catalogCoverIcons.isEmpty());
+    check(!window.m_requestedCatalogCovers.contains(QStringLiteral("obsolete-dpr-cover")));
 
     Track miku, unrelated;
     miku.id = QStringLiteral("miku");

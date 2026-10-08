@@ -95,7 +95,7 @@ UpdatePanel::UpdatePanel(const QString &currentVersion, const QColor &accent,
         setAction(Action::Download, QStringLiteral("下载并更新"));
     });
     connect(m_updater, &AppUpdater::upToDate, this, [this] {
-        m_status->setText(QStringLiteral("已经是最新版本。"));
+        m_status->setText(QStringLiteral("暂无更新的正式版本。"));
         m_progress->hide();
         setAction(Action::Check, QStringLiteral("重新检查"));
     });

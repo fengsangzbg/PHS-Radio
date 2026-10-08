@@ -169,6 +169,104 @@ void verifySeeking(PlaybackDock &dock)
     dock.onSeekRequested = {};
 }
 
+void verifyVolume(QWidget &host, PlaybackDock &dock)
+{
+    QSlider *volume = dock.volumeSlider();
+    JellyButton *mute = dock.muteButton();
+    int volumeRequests = 0, muteRequests = 0, seekRequests = 0;
+    qreal observedVolume = -1;
+    bool observedMute = false;
+    dock.onVolumeChanged = [&](qreal value) { ++volumeRequests; observedVolume = value; };
+    dock.onMutedChanged = [&](bool value) { ++muteRequests; observedMute = value; };
+    dock.onSeekRequested = [&](qint64) { ++seekRequests; };
+    dock.setVolume(.37);
+    dock.setMuted(true);
+    check(volume->minimum() == 0 && volume->maximum() == 100 && volume->value() == 37
+              && mute->isChecked() && volumeRequests == 0 && muteRequests == 0,
+          "Restoring music volume and mute must update the controls without user callbacks.");
+    check(volume->accessibleName() == QStringLiteral("音乐音量")
+              && mute->accessibleName().contains(QStringLiteral("恢复")),
+          "Music volume controls must expose meaningful accessible names and mute actions.");
+    dock.setVolume(2);
+    check(volume->value() == 100, "Programmatic volume must clamp to one hundred percent.");
+    dock.setVolume(-1);
+    check(volume->value() == 0 && volumeRequests == 0 && muteRequests == 0,
+          "Programmatic volume must clamp to zero without unmuting or issuing callbacks.");
+    dock.setVolume(.37);
+    const QPoint start(volume->width() * 3 / 4, volume->height() / 2);
+    mouseEvent(volume, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    check(volume->isSliderDown() && volumeRequests > 0 && observedVolume > .5
+              && muteRequests == 1 && !observedMute && !dock.m_muted,
+          "Dragging a muted music volume to a positive value must adjust it live and restore sound.");
+    dock.updatePointer(QPoint(-20, -20), false);
+    waitForEvents(600);
+    check(dock.isExpanded(), "An active music volume drag must keep the dock open outside its bounds.");
+    const int requestsBeforeMove = volumeRequests;
+    const QPoint end(volume->width() / 3, volume->height() / 2);
+    mouseEvent(volume, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+    check(volumeRequests > requestsBeforeMove && qAbs(observedVolume - volume->value() / 100.0) < .001,
+          "Music volume changes must reach the controller while dragging, before release.");
+    const int requestsBeforeRelease = volumeRequests;
+    mouseEvent(volume, QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+    check(!volume->isSliderDown() && volumeRequests == requestsBeforeRelease && seekRequests == 0,
+          "Releasing music volume must not duplicate the last value or seek the song.");
+    QKeyEvent right(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
+    QApplication::sendEvent(volume, &right);
+    dock.updatePointer(QPoint(-20, -20), false);
+    waitForEvents(500);
+    check(dock.isExpanded() && dock.m_keyboardTimer->isActive(),
+          "Keyboard adjustment of music volume must prevent automatic dock collapse.");
+    dock.m_keyboardTimer->stop();
+
+    dock.setVolume(.42);
+    dock.setMuted(false);
+    const int beforeMuteVolumeRequests = volumeRequests;
+    mute->click();
+    check(observedMute && dock.m_muted && volume->value() == 42,
+          "Muting must preserve the user's selected music volume.");
+    mute->click();
+    check(!observedMute && !dock.m_muted && volume->value() == 42
+              && volumeRequests == beforeMuteVolumeRequests,
+          "Restoring a muted song must retain its previous volume without changing the volume callback.");
+    volume->setValue(0);
+    check(mute->isChecked() && !dock.m_muted, "Zero volume must expose the restore-sound action.");
+    mute->click();
+    check(volume->value() == 42 && qAbs(observedVolume - .42) < .001 && !dock.m_muted,
+          "The restore button at zero percent must recover the last nonzero music volume.");
+    const int requestsBeforeSync = volumeRequests, mutedBeforeSync = muteRequests;
+    dock.setVolume(.63);
+    dock.setMuted(true);
+    dock.setTrack(QStringLiteral("Another song"), QStringLiteral("Another artist"));
+    check(volume->value() == 63 && dock.m_muted && volumeRequests == requestsBeforeSync
+              && muteRequests == mutedBeforeSync,
+          "Programmatic audio synchronization and changing songs must preserve independent music volume and mute.");
+    dock.setMuted(false);
+    dock.setBusy(true);
+    check(volume->isEnabled() && mute->isEnabled(), "Preparing a song must leave music volume controls usable.");
+    dock.setBusy(false);
+
+    host.resize(760, 560);
+    QCoreApplication::processEvents();
+    for (QWidget *control : {static_cast<QWidget *>(volume), static_cast<QWidget *>(mute),
+                            static_cast<QWidget *>(dock.lyricsButton()), static_cast<QWidget *>(dock.songPageButton())}) {
+        check(dock.rect().contains(QRect(control->mapTo(&dock, QPoint()), control->size())),
+              "All music volume and page controls must fit inside the minimum-size dock.");
+    }
+    check(!dock.m_volumeLabel->isVisible()
+              && qAbs(dock.playPauseButton()->mapTo(&dock, dock.playPauseButton()->rect().center()).x()
+                      - dock.rect().center().x()) <= 1,
+          "Compact docks must hide the percentage label and keep playback centered.");
+    host.resize(1180, 780);
+    QCoreApplication::processEvents();
+    check(dock.m_volumeLabel->isVisible()
+              && qAbs(dock.playPauseButton()->mapTo(&dock, dock.playPauseButton()->rect().center()).x()
+                      - dock.rect().center().x()) <= 1,
+          "Wide docks must restore the percentage label without shifting playback away from the center.");
+    dock.onVolumeChanged = {};
+    dock.onMutedChanged = {};
+    dock.onSeekRequested = {};
+}
+
 void verifyButtons(PlaybackDock &dock)
 {
     int playRequests = 0, nextRequests = 0, previousRequests = 0, modeRequests = 0;
@@ -279,6 +377,7 @@ int main(int argc, char **argv)
     verifyPointerAndFocus(host, dock, outside);
     verifyPinResizeAndAnimation(host, dock);
     verifySeeking(dock);
+    verifyVolume(host, dock);
     verifyButtons(dock);
     verifyPopupHold(dock);
     verifyPlaybackMeteor(dock);

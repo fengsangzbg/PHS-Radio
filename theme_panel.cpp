@@ -1,11 +1,15 @@
 #include "theme_panel.h"
 #include "aero_widgets.h"
+#include "wallpaper_engine_capture.h"
 
+#include <QApplication>
 #include <QComboBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QProcess>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
@@ -107,6 +111,28 @@ ThemePanel::ThemePanel(QWidget *parent)
     hint->setWordWrap(true);
     hint->setStyleSheet(QStringLiteral("color: #94a3b4; font-size: 12px;"));
     layout->addWidget(hint);
+    auto *frameRate = new QHBoxLayout;
+    m_engineFrameRate = new QLabel(this);
+    m_engineFrameRate->setObjectName(QStringLiteral("wallpaperEngineFrameRate"));
+    m_engineFrameRate->setWordWrap(true);
+    m_engineSettings = new JellyButton(QStringLiteral("打开 Wallpaper Engine"), this);
+    m_engineSettings->setToolTip(QStringLiteral("在设置 → 性能中调整源画面帧率并应用。此设置同时影响桌面和播放器中的场景／网页壁纸；播放器内当前最高为 60 FPS。"));
+    frameRate->addWidget(m_engineFrameRate, 1);
+    frameRate->addWidget(m_engineSettings);
+    layout->addLayout(frameRate);
+    connect(m_engineSettings, &QPushButton::clicked, this, [this] {
+        const QFileInfo executable(engineExecutable());
+        QProcess process;
+        process.setProgram(executable.absoluteFilePath());
+        process.setArguments({QStringLiteral("-showbrowse")});
+        process.setWorkingDirectory(executable.absolutePath());
+        if (!process.startDetached())
+            m_libraryStatus->setText(QStringLiteral("无法打开 Wallpaper Engine。请在它的设置 → 性能中调整画面帧率并应用。"));
+    });
+    connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive && isVisible())
+            updateEngineFrameRate();
+    });
     auto *darkness = new QHBoxLayout;
     darkness->addWidget(new QLabel(QStringLiteral("背景遮暗"), this));
     m_dimming->setRange(0, 85);
@@ -131,6 +157,33 @@ ThemePanel::ThemePanel(QWidget *parent)
         "QSlider::handle:horizontal { background: #bce5f7; width: 15px; margin: -5px 0; border-radius: 7px; }"));
     refreshWallpapers();
     updateCurrent();
+}
+
+void ThemePanel::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    updateEngineFrameRate();
+}
+
+QString ThemePanel::engineExecutable() const
+{
+    return QFileInfo(m_theme.engineExecutable).isFile() ? m_theme.engineExecutable : m_library.executable;
+}
+
+void ThemePanel::updateEngineFrameRate()
+{
+    const QString executable = engineExecutable();
+    const bool installed = !executable.isEmpty() && QFileInfo(executable).isFile();
+    m_engineSettings->setEnabled(installed);
+    QString error;
+    const int fps = installed ? WallpaperEngineCapture::configuredFrameRate(executable, &error) : 0;
+    const QString setting = !installed ? QStringLiteral("未发现 Wallpaper Engine")
+        : fps > 0 ? QStringLiteral("WE 画面帧率设置：%1 FPS（全局）").arg(fps)
+        : QStringLiteral("暂无法读取 WE 的画面帧率设置");
+    m_engineFrameRate->setText(setting + (m_theme.kind == BackgroundKind::Video
+        ? QStringLiteral("\n当前视频背景保持原视频帧率。")
+        : QStringLiteral("\n场景／网页背景当前最高 60 FPS，实际显示受屏幕和性能限制。")));
+    m_engineFrameRate->setToolTip(error);
 }
 
 void ThemePanel::setTheme(const BackgroundTheme &theme)
@@ -168,6 +221,7 @@ void ThemePanel::refreshWallpapers(const QStringList &steamRoots)
     m_libraryStatus->setText(m_library.projects.isEmpty()
         ? QStringLiteral("未找到本机壁纸。可选择 Steam 目录，或直接导入图片和视频。")
         : QStringLiteral("已找到 %1 个本机壁纸，选择后可直接使用。").arg(m_library.projects.size()));
+    updateEngineFrameRate();
 }
 
 void ThemePanel::updateCurrent()
@@ -176,4 +230,5 @@ void ThemePanel::updateCurrent()
         : m_theme.displayName.isEmpty() ? QFileInfo(m_theme.sourcePath).fileName() : m_theme.displayName;
     m_current->setText(QStringLiteral("当前背景：%1").arg(name));
     m_current->setToolTip(m_theme.sourcePath);
+    updateEngineFrameRate();
 }

@@ -9,9 +9,12 @@
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QIcon>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPropertyAnimation>
+#include <QResizeEvent>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStyle>
@@ -24,6 +27,31 @@
 namespace {
 
 constexpr int SliderResolution = 1000000;
+
+QIcon speakerIcon(bool silent, qreal dpr)
+{
+    const int pixels = qRound(24 * dpr);
+    QPixmap icon(pixels, pixels);
+    icon.setDevicePixelRatio(dpr);
+    icon.fill(Qt::transparent);
+    QPainter painter(&icon);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(QColor(235, 248, 255), 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(QColor(235, 248, 255, 28));
+    QPainterPath speaker;
+    speaker.moveTo(3, 9); speaker.lineTo(7, 9); speaker.lineTo(11, 5);
+    speaker.lineTo(11, 19); speaker.lineTo(7, 15); speaker.lineTo(3, 15); speaker.closeSubpath();
+    painter.drawPath(speaker);
+    painter.setBrush(Qt::NoBrush);
+    if (silent) {
+        painter.drawLine(QPointF(16, 8), QPointF(22, 16));
+        painter.drawLine(QPointF(22, 8), QPointF(16, 16));
+    } else {
+        painter.drawArc(QRectF(11, 8, 6, 8), -60 * 16, 120 * 16);
+        painter.drawArc(QRectF(9, 4, 13, 16), -55 * 16, 110 * 16);
+    }
+    return QIcon(icon);
+}
 
 QString timeText(qint64 milliseconds)
 {
@@ -117,6 +145,9 @@ private:
 PlaybackDock::PlaybackDock(QWidget *host)
     : QWidget(host), m_host(host), m_title(new TrackLabel(this)), m_artist(new TrackLabel(this)),
       m_elapsed(new QLabel(this)), m_total(new QLabel(this)), m_progress(new SeekSlider(this)),
+      m_volumeSlider(new SeekSlider(this)), m_volumeLabel(new QLabel(this)),
+      m_mute(new JellyButton({}, this)), m_transportLeft(new QWidget(this)),
+      m_transportRight(new QWidget(this)),
       m_playPause(new JellyButton({}, this)), m_previous(new JellyButton({}, this)),
       m_next(new JellyButton({}, this)), m_mode(new JellyButton({}, this)),
       m_pin(new JellyButton({}, this)), m_palette(new JellyButton({}, this)),
@@ -205,13 +236,47 @@ PlaybackDock::PlaybackDock(QWidget *host)
     m_lyrics->setObjectName(QStringLiteral("playbackLyricsButton"));
     m_lyrics->setFixedSize(58, 38);
     m_lyrics->setToolTip(QStringLiteral("打开滚动歌词"));
-    transport->addWidget(m_songPage);
-    transport->addStretch(1);
-    transport->addWidget(m_previous);
-    transport->addWidget(m_playPause);
-    transport->addWidget(m_next);
-    transport->addStretch(1);
-    transport->addWidget(m_lyrics);
+    auto *left = new QHBoxLayout(m_transportLeft);
+    left->setContentsMargins(0, 0, 0, 0);
+    left->addWidget(m_songPage);
+    left->addStretch(1);
+    auto *controls = new QWidget(this);
+    auto *center = new QHBoxLayout(controls);
+    center->setContentsMargins(0, 0, 0, 0);
+    center->setSpacing(14);
+    center->addWidget(m_previous);
+    center->addWidget(m_playPause);
+    center->addWidget(m_next);
+    controls->setFixedSize(174, 54);
+    auto *right = new QHBoxLayout(m_transportRight);
+    right->setContentsMargins(0, 0, 0, 0);
+    right->setSpacing(8);
+    right->addStretch(1);
+    right->addWidget(m_lyrics);
+    m_mute->setObjectName(QStringLiteral("playbackMuteButton"));
+    m_mute->setCheckable(true);
+    m_mute->setFixedSize(34, 34);
+    m_mute->installEventFilter(this);
+    right->addWidget(m_mute);
+    m_volumeSlider->setObjectName(QStringLiteral("playbackVolume"));
+    m_volumeSlider->setRange(0, 100);
+    m_volumeSlider->setSingleStep(1);
+    m_volumeSlider->setPageStep(10);
+    m_volumeSlider->setTracking(true);
+    m_volumeSlider->setMinimumHeight(22);
+    m_volumeSlider->setFocusPolicy(Qt::StrongFocus);
+    m_volumeSlider->setAccessibleName(QStringLiteral("音乐音量"));
+    m_volumeSlider->setAccessibleDescription(QStringLiteral("拖动或方向键调整音乐音量，不改变系统总音量"));
+    m_volumeSlider->installEventFilter(this);
+    right->addWidget(m_volumeSlider);
+    m_volumeLabel->setObjectName(QStringLiteral("playbackVolumeLabel"));
+    m_volumeLabel->setFixedWidth(36);
+    m_volumeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_volumeLabel->setStyleSheet(QStringLiteral("color:#b3c0cc;background:transparent;font-size:11px;"));
+    right->addWidget(m_volumeLabel);
+    transport->addWidget(m_transportLeft);
+    transport->addWidget(controls);
+    transport->addWidget(m_transportRight);
     layout->addLayout(transport);
 
     connect(m_playPause, &QPushButton::clicked, this, [this] {
@@ -240,6 +305,29 @@ PlaybackDock::PlaybackDock(QWidget *host)
         if (onColorRequested)
             onColorRequested();
         m_colorRequestActive = false;
+    });
+    connect(m_mute, &QPushButton::toggled, this, [this](bool muted) {
+        if (!muted && m_volume <= 0) {
+            setVolume(m_lastAudibleVolume > 0 ? m_lastAudibleVolume : 1);
+            if (onVolumeChanged)
+                onVolumeChanged(m_volume);
+        }
+        setMuted(muted);
+        if (onMutedChanged)
+            onMutedChanged(muted);
+    });
+    connect(m_volumeSlider, &QSlider::sliderPressed, this, [this] {
+        m_leaveTimer->stop();
+    });
+    connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int value) {
+        setVolume(value / 100.0);
+        if (onVolumeChanged)
+            onVolumeChanged(m_volume);
+        if (m_muted && value > 0) {
+            setMuted(false);
+            if (onMutedChanged)
+                onMutedChanged(false);
+        }
     });
     connect(m_progress, &QSlider::sliderPressed, this, [this] {
         m_dragging = true;
@@ -276,10 +364,13 @@ PlaybackDock::PlaybackDock(QWidget *host)
     setPlaying(false);
     setShuffle(false);
     setPinned(false);
+    setVolume(1);
+    setMuted(false);
     setAccentColor(m_accent);
     updateSeekEnabled();
     updateTimeLabels();
     setGeometry(hiddenPanelRect());
+    updateTransportLayout();
     hide();
     m_pointerTimer->start();
 }
@@ -382,6 +473,56 @@ void PlaybackDock::setSeekable(bool seekable)
     updateTimeLabels();
 }
 
+void PlaybackDock::setVolume(qreal volume)
+{
+    if (!std::isfinite(volume))
+        return;
+    m_volume = std::clamp(volume, qreal(0), qreal(1));
+    if (m_volume > 0)
+        m_lastAudibleVolume = m_volume;
+    const QSignalBlocker blockedSignals(m_volumeSlider);
+    m_volumeSlider->setValue(qRound(m_volume * 100));
+    updateVolumeDisplay();
+}
+
+void PlaybackDock::setMuted(bool muted)
+{
+    m_muted = muted;
+    updateVolumeDisplay();
+}
+
+void PlaybackDock::updateVolumeDisplay()
+{
+    const int percent = qRound(m_volume * 100);
+    const bool silent = m_muted || m_volume <= 0;
+    {
+        const QSignalBlocker blockedSignals(m_mute);
+        m_mute->setChecked(silent);
+    }
+    const qreal dpr = devicePixelRatioF();
+    if (m_mute->icon().isNull() || m_muteIconSilent != silent || !qFuzzyCompare(m_muteIconDpr, dpr)) {
+        m_mute->setIcon(speakerIcon(silent, dpr));
+        m_muteIconSilent = silent;
+        m_muteIconDpr = dpr;
+    }
+    const QString action = silent ? QStringLiteral("恢复音乐声音") : QStringLiteral("静音音乐");
+    m_mute->setToolTip(action);
+    m_mute->setAccessibleName(action);
+    m_volumeLabel->setText(QString::number(percent) + QLatin1Char('%'));
+    m_volumeSlider->setToolTip(QStringLiteral("音乐音量：%1%%2\n拖动或方向键调整，不改变系统总音量")
+        .arg(percent).arg(m_muted ? QStringLiteral("（已静音）") : QString()));
+}
+
+void PlaybackDock::updateTransportLayout()
+{
+    const int sideWidth = std::max(1, (width() - 44 - 174 - 28) / 2);
+    m_transportLeft->setFixedWidth(sideWidth);
+    m_transportRight->setFixedWidth(sideWidth);
+    const bool compact = width() < 900;
+    m_volumeLabel->setVisible(!compact);
+    m_volumeSlider->setFixedWidth(compact ? std::clamp(sideWidth - 108, 64, 90) : 124);
+}
+
 void PlaybackDock::updateSeekEnabled()
 {
     m_progress->setEnabled(m_seekable && m_duration > 0);
@@ -422,7 +563,7 @@ void PlaybackDock::setAccentColor(const QColor &color)
     if (!color.isValid())
         return;
     m_accent = color;
-    for (JellyButton *button : {m_playPause, m_previous, m_next, m_mode, m_pin, m_palette, m_songPage, m_lyrics})
+    for (JellyButton *button : {m_playPause, m_previous, m_next, m_mode, m_pin, m_palette, m_songPage, m_lyrics, m_mute})
         button->setAccentColor(color);
     m_progress->setStyleSheet(QStringLiteral(
         "QSlider { background: transparent; }"
@@ -434,6 +575,7 @@ void PlaybackDock::setAccentColor(const QColor &color)
         "QSlider::handle:horizontal:disabled { background: rgba(255,255,255,18); border-color: rgba(255,255,255,30); }"
         "QSlider::sub-page:horizontal:disabled { background: rgba(255,255,255,20); }")
         .arg(color.lighter(120).name(), color.darker(130).name()));
+    m_volumeSlider->setStyleSheet(m_progress->styleSheet());
     update();
 }
 
@@ -479,6 +621,8 @@ bool PlaybackDock::isExpanded() const { return m_expanded; }
 bool PlaybackDock::isPinned() const { return m_pinned; }
 bool PlaybackDock::isShuffle() const { return m_shuffle; }
 QSlider *PlaybackDock::progressSlider() const { return m_progress; }
+QSlider *PlaybackDock::volumeSlider() const { return m_volumeSlider; }
+JellyButton *PlaybackDock::muteButton() const { return m_mute; }
 JellyButton *PlaybackDock::playPauseButton() const { return m_playPause; }
 QLabel *PlaybackDock::titleLabel() const { return m_title; }
 
@@ -500,9 +644,10 @@ QRect PlaybackDock::hiddenPanelRect() const
 bool PlaybackDock::hasInteraction() const
 {
     if (m_interactionHeld || m_colorRequestActive || m_meteor->isRunning() || m_dragging || m_progress->isSliderDown()
+        || m_volumeSlider->isSliderDown()
         || m_keyboardTimer->isActive() || QApplication::activePopupWidget())
         return true;
-    for (const JellyButton *button : {m_playPause, m_previous, m_next, m_mode, m_pin, m_palette})
+    for (const JellyButton *button : {m_playPause, m_previous, m_next, m_mode, m_pin, m_palette, m_mute, m_songPage, m_lyrics})
         if (button->isDown())
             return true;
     return false;
@@ -592,12 +737,15 @@ bool PlaybackDock::eventFilter(QObject *watched, QEvent *event)
     if (watched == m_host) {
         if (event->type() == QEvent::Resize || event->type() == QEvent::Show)
             adjustToHost();
+        else if (event->type() == QEvent::DevicePixelRatioChange)
+            updateVolumeDisplay();
         else if (event->type() == QEvent::Hide) {
             m_leaveTimer->stop();
             if (!m_pinned && !hasInteraction())
                 setExpanded(false);
         }
-    } else if (watched == m_progress && (event->type() == QEvent::KeyPress || event->type() == QEvent::Wheel)) {
+    } else if ((watched == m_progress || watched == m_volumeSlider || watched == m_mute)
+               && (event->type() == QEvent::KeyPress || event->type() == QEvent::Wheel)) {
         m_keyboardTimer->start();
         m_leaveTimer->stop();
     }
@@ -610,4 +758,10 @@ void PlaybackDock::paintEvent(QPaintEvent *)
     painter.setRenderHint(QPainter::Antialiasing);
     Liquid::paintBackdrop(painter, this, 26);
     Aero::paintGlass(painter, QRectF(rect()).adjusted(2, 2, -2, -2), m_accent, 26);
+}
+
+void PlaybackDock::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    updateTransportLayout();
 }

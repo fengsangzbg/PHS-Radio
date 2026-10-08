@@ -147,6 +147,103 @@ int main(int argc, char **argv)
           "The actual application controller must open on its home page.");
     auto *home = window.findChild<QPushButton *>(QStringLiteral("homeButton"));
     check(home, "The real toolbar must expose its home navigation button.");
+    QVector<Track> responsiveTracks;
+    for (int row = 0; row < 30; ++row) {
+        Track recommended;
+        recommended.id = QStringLiteral("responsive-%1").arg(row);
+        recommended.title = QStringLiteral("今日推荐 · 测试歌曲 %1").arg(row + 1);
+        recommended.artist = QStringLiteral("歌手 %1 · 本地布局夹具").arg(row + 1);
+        responsiveTracks.append(recommended);
+    }
+    window.m_homePage->setRecommendations(MusicPlatform::Kugou, responsiveTracks);
+    window.m_homePage->setRecommendations(MusicPlatform::NetEaseCloud, responsiveTracks);
+    window.m_homePage->setKugouOnly(true); // Match the currently published homepage.
+    for (int row = 0; row < responsiveTracks.size(); ++row) {
+        QPixmap cover(600, 600);
+        QPainter painter(&cover);
+        QLinearGradient gradient(0, 0, 600, 600);
+        gradient.setColorAt(0, QColor::fromHsv((row * 37 + 175) % 360, 155, 225));
+        gradient.setColorAt(1, QColor::fromHsv((row * 37 + 215) % 360, 205, 90));
+        painter.fillRect(cover.rect(), gradient);
+        painter.setPen(Qt::NoPen);
+        for (int wave = 0; wave < 3; ++wave) {
+            QPainterPath shape;
+            shape.moveTo(0, 260 + wave * 85);
+            shape.cubicTo(180, 120 + wave * 85, 350, 480 + wave * 50, 600, 260 + wave * 70);
+            shape.lineTo(600, 600);
+            shape.lineTo(0, 600);
+            shape.closeSubpath();
+            painter.fillPath(shape, QColor(225, 245, 255, 35 + wave * 12));
+        }
+        QFont coverFont(QStringLiteral("Segoe UI"));
+        coverFont.setPointSize(92);
+        coverFont.setWeight(QFont::Light);
+        painter.setFont(coverFont);
+        painter.setPen(QColor(240, 250, 255));
+        painter.drawText(cover.rect(), Qt::AlignCenter, QString::number(row + 1));
+        painter.end();
+        window.m_homePage->setCover(MusicPlatform::Kugou, row, cover);
+    }
+    const QString captureDirectory = qEnvironmentVariable("PHSRADIO_LAYOUT_CAPTURE_DIR");
+    const auto saveLayoutCapture = [&](const QString &name) {
+        if (captureDirectory.isEmpty())
+            return;
+        // Disable only this fixture's pointer polls; never move the real user's
+        // cursor to keep hover-driven overlays out of layout screenshots.
+        window.m_drawer->m_pointerTimer->stop();
+        window.m_drawer->m_leaveTimer->stop();
+        window.m_drawer->m_pinned = false;
+        window.m_drawer->setExpanded(false);
+        window.m_drawer->m_slide->stop();
+        window.m_drawer->setGeometry(window.m_drawer->hiddenPanelRect());
+        window.m_drawer->hide();
+        window.m_dock->m_pointerTimer->stop();
+        window.m_dock->m_leaveTimer->stop();
+        window.m_dock->m_pinned = false;
+        window.m_dock->setExpanded(false);
+        window.m_dock->m_slide->stop();
+        window.m_dock->setGeometry(window.m_dock->hiddenPanelRect());
+        window.m_dock->hide();
+        check(QDir().mkpath(captureDirectory), "The private layout capture directory must be writable.");
+        check(window.grab().save(QDir(captureDirectory).filePath(name)),
+              "The actual application fixture must save its requested layout screenshot.");
+    };
+    window.resize(1180, 780);
+    events(100);
+    auto *initialHomeScroll = window.m_homePage->findChild<QScrollArea *>(QStringLiteral("homeScrollArea"));
+    auto *initialRecommendations = window.m_homePage->findChild<QListWidget *>(QStringLiteral("kugouRecommendations"));
+    const QRect initialCard = initialRecommendations->visualItemRect(initialRecommendations->item(0));
+    const QRect cardOnPage(initialRecommendations->viewport()->mapTo(initialHomeScroll->viewport(), initialCard.topLeft()),
+                           initialCard.size());
+    check(initialHomeScroll->viewport()->rect().contains(cardOnPage),
+          "The default-height home page must show a complete recommendation card including both text lines.");
+    saveLayoutCapture(QStringLiteral("home-1180x780.png"));
+    window.showMaximized();
+    events(60);
+    window.showNormal();
+    window.resize(760, 560);
+    events(120);
+    saveLayoutCapture(QStringLiteral("home-restored-760x560.png"));
+    auto *homeScroll = window.m_homePage->findChild<QScrollArea *>(QStringLiteral("homeScrollArea"));
+    auto *recommendations = window.m_homePage->findChild<QListWidget *>(QStringLiteral("kugouRecommendations"));
+    check(window.size() == QSize(760, 560)
+              && window.m_surface->rect().contains(QRect(window.m_contentPages->pos(), window.m_contentPages->size()))
+              && window.m_contentPages->rect().contains(QRect(window.m_homePage->pos(), window.m_homePage->size())),
+          "Restoring the actual application must keep its home page inside the window despite hidden song-page minimum hints.");
+    check(homeScroll && recommendations && homeScroll->verticalScrollBar()->maximum() > 0,
+          "All homepage content must remain reachable at the actual minimum window size.");
+    recommendations->scrollToItem(recommendations->item(29), QAbstractItemView::PositionAtCenter);
+    QCoreApplication::processEvents();
+    check(recommendations->viewport()->rect().contains(recommendations->visualItemRect(recommendations->item(29))),
+          "The last recommendation must remain fully reachable after maximized-to-normal restoration.");
+    if (!captureDirectory.isEmpty()) {
+        recommendations->horizontalScrollBar()->setValue(0);
+        const int recommendationTop = recommendations->parentWidget()->mapTo(homeScroll->widget(), QPoint()).y();
+        homeScroll->verticalScrollBar()->setValue(qMax(0, recommendationTop - 12));
+        events(40);
+        saveLayoutCapture(QStringLiteral("home-restored-recommendations-760x560.png"));
+        homeScroll->verticalScrollBar()->setValue(0);
+    }
     window.m_navigationButtons[1]->click();
     check(window.m_contentPages->currentWidget() == window.m_libraryPage,
           "Selecting a playlist category must open the library page.");

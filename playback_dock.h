@@ -24,6 +24,8 @@ public:
     void setPosition(qint64 position);
     void setDuration(qint64 duration);
     void setSeekable(bool seekable);
+    void setVolume(qreal volume);
+    void setMuted(bool muted);
     void setAccentColor(const QColor &color);
     void setShuffle(bool shuffle);
     void setExpanded(bool expanded);
@@ -36,6 +38,8 @@ public:
     void triggerPlaybackMeteor();
 
     QSlider *progressSlider() const;
+    QSlider *volumeSlider() const;
+    JellyButton *muteButton() const;
     JellyButton *playPauseButton() const;
     QLabel *titleLabel() const;
     QString currentLyric() const;
@@ -51,10 +55,13 @@ public:
     std::function<void()> onColorRequested;
     std::function<void()> onSongPageRequested;
     std::function<void()> onLyricsRequested;
+    std::function<void(qreal)> onVolumeChanged;
+    std::function<void(bool)> onMutedChanged;
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     QRect targetPanelRect() const;
@@ -66,6 +73,8 @@ private:
     void updateTimeLabels();
     void updatePlayButton();
     void updateSeekEnabled();
+    void updateVolumeDisplay();
+    void updateTransportLayout();
     void requestSeek(int value);
     qint64 positionForValue(int value) const;
     int valueForPosition(qint64 position) const;
@@ -76,6 +85,11 @@ private:
     QLabel *m_elapsed;
     QLabel *m_total;
     QSlider *m_progress;
+    QSlider *m_volumeSlider;
+    QLabel *m_volumeLabel;
+    JellyButton *m_mute;
+    QWidget *m_transportLeft;
+    QWidget *m_transportRight;
     JellyButton *m_playPause;
     JellyButton *m_previous;
     JellyButton *m_next;
@@ -104,4 +118,9 @@ private:
     bool m_syncingProgress = false;
     bool m_interactionHeld = false;
     bool m_colorRequestActive = false;
+    qreal m_volume = 1;
+    qreal m_lastAudibleVolume = 1;
+    bool m_muted = false;
+    bool m_muteIconSilent = false;
+    qreal m_muteIconDpr = 0;
 };

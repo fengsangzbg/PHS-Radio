@@ -22,7 +22,7 @@
 #endif
 
 #ifndef PHSRADIO_VERSION
-#define PHSRADIO_VERSION "0.2.2"
+#define PHSRADIO_VERSION "0.2.3-beta"
 #endif
 
 static void initializeUpdaterResources() { Q_INIT_RESOURCE(updater); }
@@ -40,7 +40,7 @@ bool report(QString *error, const QString &message)
 bool versionParts(QString version, QList<qulonglong> *parts)
 {
     if (version.startsWith('v')) version.remove(0, 1);
-    const auto match = QRegularExpression(QStringLiteral("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$")).match(version);
+    const auto match = QRegularExpression(QStringLiteral("\\A(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\z")).match(version);
     if (!match.hasMatch()) return false;
     parts->clear();
     for (int i = 1; i <= 3; ++i) {
@@ -48,6 +48,42 @@ bool versionParts(QString version, QList<qulonglong> *parts)
         const auto number = match.captured(i).toULongLong(&ok);
         if (!ok) return false;
         parts->append(number);
+    }
+    return true;
+}
+
+struct ComparableVersion {
+    QList<qulonglong> numbers;
+    bool beta = false;
+    bool numberedBeta = false;
+    qulonglong betaNumber = 0;
+};
+
+bool comparableVersion(const QString &version, ComparableVersion *parsed)
+{
+    // Local beta builds may compare themselves with the next stable release.
+    // Keep versionParts above stable-only: parseRelease uses it to gate remote
+    // packages independently of GitHub's draft/prerelease flags.
+    static const QRegularExpression expression(QStringLiteral(
+        "\\Av?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(beta)(?:\\.(0|[1-9][0-9]*))?)?\\z"));
+    const auto match = expression.match(version);
+    if (!match.hasMatch())
+        return false;
+    parsed->numbers.clear();
+    for (int component = 1; component <= 3; ++component) {
+        bool valid = false;
+        const auto value = match.captured(component).toULongLong(&valid);
+        if (!valid)
+            return false;
+        parsed->numbers.append(value);
+    }
+    parsed->beta = !match.captured(4).isEmpty();
+    parsed->numberedBeta = !match.captured(5).isEmpty();
+    if (parsed->numberedBeta) {
+        bool valid = false;
+        parsed->betaNumber = match.captured(5).toULongLong(&valid);
+        if (!valid)
+            return false;
     }
     return true;
 }
@@ -107,12 +143,20 @@ bool AppUpdater::isBusy() const
 
 int AppUpdater::compareVersions(const QString &left, const QString &right, bool *valid)
 {
-    QList<qulonglong> a, b;
-    const bool ok = versionParts(left, &a) && versionParts(right, &b);
+    ComparableVersion a, b;
+    const bool ok = comparableVersion(left, &a) && comparableVersion(right, &b);
     if (valid) *valid = ok;
     if (!ok) return 0;
     for (int i = 0; i != 3; ++i) {
-        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+        if (a.numbers[i] != b.numbers[i]) return a.numbers[i] < b.numbers[i] ? -1 : 1;
+    }
+    if (a.beta != b.beta)
+        return a.beta ? -1 : 1;
+    if (a.beta) {
+        if (a.numberedBeta != b.numberedBeta)
+            return a.numberedBeta ? 1 : -1;
+        if (a.betaNumber != b.betaNumber)
+            return a.betaNumber < b.betaNumber ? -1 : 1;
     }
     return 0;
 }
@@ -326,7 +370,7 @@ void AppUpdater::checkForUpdates()
             if (!valid) { fail(QStringLiteral("当前程序版本号无效，无法安全比较版本。")); return; }
             if (order <= 0) {
                 m_state = State::Idle;
-                emit statusChanged(QStringLiteral("当前已是最新正式版本。"));
+                emit statusChanged(QStringLiteral("暂无更新的正式版本。"));
                 emit upToDate(); return;
             }
             m_release = release; m_state = State::Available;
