@@ -32,6 +32,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dwmapi.h>
 #endif
 
 namespace {
@@ -95,6 +96,52 @@ bool rendererIsUsable(HWND window, const QString &name, QSize *size = nullptr)
     if (size)
         *size = QSize(bounds.right - bounds.left, bounds.bottom - bounds.top);
     return true;
+}
+
+bool rendererIsOutsideDesktop(HWND window)
+{
+    RECT bounds{};
+    const int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (width <= 0 || height <= 0 || !GetWindowRect(window, &bounds))
+        return false;
+    RECT desktop{GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), 0, 0};
+    desktop.right = desktop.left + width;
+    desktop.bottom = desktop.top + height;
+    RECT overlap{};
+    return !IntersectRect(&overlap, &bounds, &desktop);
+}
+
+bool setRendererOpacity(HWND window, BYTE desiredAlpha)
+{
+    COLORREF key{};
+    BYTE alpha{};
+    DWORD flags{};
+    if (GetLayeredWindowAttributes(window, &key, &alpha, &flags)
+        && alpha == desiredAlpha && (flags & LWA_ALPHA))
+        return true;
+    if (SetLayeredWindowAttributes(window, 0, desiredAlpha, LWA_ALPHA))
+        return true;
+    ShowWindow(window, SW_HIDE);
+    return false;
+}
+
+bool resizeRenderer(HWND window, const QSize &size)
+{
+    RECT client{};
+    if (GetClientRect(window, &client)) {
+        if (client.right == size.width() && client.bottom == size.height())
+            return true;
+        const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE));
+        const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE));
+        RECT desired{0, 0, size.width(), size.height()};
+        if (AdjustWindowRectEx(&desired, style, FALSE, exStyle)
+            && SetWindowPos(window, nullptr, 0, 0, desired.right - desired.left,
+                desired.bottom - desired.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
+            return true;
+    }
+    ShowWindow(window, SW_HIDE);
+    return false;
 }
 #endif
 
@@ -559,14 +606,69 @@ bool WallpaperEngineCapture::startNativeFallback()
     m_usingNativeCapture = true;
     m_announced = false;
     m_captureErrorPending = false;
-    m_nativeCapture->start(m_nativeWindow);
+    if (m_nativeCreateBeforeOpacity) {
+        m_waitingForCaptureItem = true;
+        if (!parkWindow())
+            return false;
+    }
+    // Preparation happens offscreen. Select the player's intended display,
+    // rather than whichever monitor happens to be closest to that parking spot.
+    m_nativeCapture->start(m_nativeWindow, m_ownerWindow, m_ownerWindow);
     m_frameClock.start();
     m_frameSchedule.reset(0);
     m_frameTimer.start(m_frameSchedule.delayMs(0));
     m_guardTimer.start();
     m_timeout.start(18000);
-    updateStatus(QStringLiteral("正在使用 Windows 原生兼容捕获连接壁纸…"));
+    updateStatus(m_nativeCreateBeforeOpacity
+        ? QStringLiteral("正在准备兼容捕获窗口…") : m_nativeWithoutOwner
+        ? QStringLiteral("正在尝试另一种窗口兼容模式…")
+        : QStringLiteral("正在使用 Windows 原生兼容捕获连接壁纸…"));
     return true;
+#else
+    return false;
+#endif
+}
+
+bool WallpaperEngineCapture::retryNativeTargetWithoutOwner()
+{
+#ifdef Q_OS_WIN
+    if (!m_requested || m_paused || !m_usingNativeCapture || m_nativeWithoutOwner
+        || !rendererIsUsable(reinterpret_cast<HWND>(m_nativeWindow), m_windowName))
+        return false;
+    DWORD affinity = WDA_NONE;
+    if (GetWindowDisplayAffinity(reinterpret_cast<HWND>(m_nativeWindow), &affinity)
+        && affinity != WDA_NONE)
+        return false;
+    // If Windows rejects the target item, test a different owner state once.
+    // This is a capability probe, not an assumption about an OS or GPU. Preserve zero
+    // desktop opacity and input isolation throughout. Do not try other GPUs
+    // for an HWND rejection, and never retry protected-window failures.
+    m_nativeWithoutOwner = true;
+    m_nativeCapture->stop();
+    if (!parkWindow())
+        return false;
+    return startNativeFallback();
+#else
+    return false;
+#endif
+}
+
+bool WallpaperEngineCapture::retryNativeTargetBeforeOpacity()
+{
+#ifdef Q_OS_WIN
+    if (!m_requested || m_paused || !m_usingNativeCapture || !m_nativeWithoutOwner
+        || m_nativeCreateBeforeOpacity
+        || !rendererIsUsable(reinterpret_cast<HWND>(m_nativeWindow), m_windowName))
+        return false;
+    DWORD affinity = WDA_NONE;
+    if (GetWindowDisplayAffinity(reinterpret_cast<HWND>(m_nativeWindow), &affinity)
+        && affinity != WDA_NONE)
+        return false;
+    // Test whether the target can be initialized before zero opacity is applied.
+    // Validate its offscreen placement before raising alpha during preparation.
+    m_nativeCreateBeforeOpacity = true;
+    m_nativeCapture->stop();
+    return startNativeFallback();
 #else
     return false;
 #endif
@@ -580,6 +682,11 @@ bool WallpaperEngineCapture::parkWindow()
         return false;
     m_nativeWindow = reinterpret_cast<quintptr>(handle);
     const auto exStyle = GetWindowLongPtrW(handle, GWL_EXSTYLE);
+    // An earlier preparation pass can have non-zero alpha. Make every style,
+    // owner and geometry mutation invisible before allowing the renderer's
+    // WINDOWPOS handlers to run. Raise alpha only after the final placement check.
+    if ((exStyle & WS_EX_LAYERED) && !setRendererOpacity(handle, 0))
+        return false;
     // Tool windows are rejected by Qt's Windows capture backend ("No tooltips").
     // Ownership keeps the renderer out of Alt+Tab without that window style.
     const auto desiredStyle = (exStyle | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED)
@@ -596,32 +703,28 @@ bool WallpaperEngineCapture::parkWindow()
     // and still yields opaque, full-resolution dynamic frames. Cloaking a WE
     // window from this process is denied; hiding or cold-starting offscreen stops
     // its frame production. Do not use either as the active rendering strategy.
-    COLORREF key{}; BYTE alpha{}; DWORD flags{};
-    if (!GetLayeredWindowAttributes(handle, &key, &alpha, &flags)
-        || alpha != 0 || !(flags & LWA_ALPHA)) {
-        if (!SetLayeredWindowAttributes(handle, 0, 0, LWA_ALPHA)) {
-            ShowWindow(handle, SW_HIDE);
-            return false;
-        }
-    }
+    if (!setRendererOpacity(handle, 0))
+        return false;
     // An invisible helper owner keeps the renderer behind the player. Directly
     // owning it by the main window would force the wallpaper above that window.
-    if (!m_hiddenOwner)
+    if (!m_nativeWithoutOwner && !m_hiddenOwner)
         m_hiddenOwner = reinterpret_cast<quintptr>(CreateWindowExW(WS_EX_TOOLWINDOW,
             L"STATIC", L"PHSRadioBackgroundOwner", WS_POPUP,
             0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr));
-    if (!m_hiddenOwner) {
+    if (!m_nativeWithoutOwner && !m_hiddenOwner) {
         ShowWindow(handle, SW_HIDE);
         return false;
     }
-    if (GetWindowLongPtrW(handle, GWLP_HWNDPARENT) != static_cast<LONG_PTR>(m_hiddenOwner)) {
+    const LONG_PTR desiredOwner = m_nativeWithoutOwner ? 0 : static_cast<LONG_PTR>(m_hiddenOwner);
+    if (GetWindowLongPtrW(handle, GWLP_HWNDPARENT) != desiredOwner) {
         SetLastError(0);
-        if (!SetWindowLongPtrW(handle, GWLP_HWNDPARENT, static_cast<LONG_PTR>(m_hiddenOwner)) && GetLastError() != 0) {
+        if (!SetWindowLongPtrW(handle, GWLP_HWNDPARENT, desiredOwner) && GetLastError() != 0) {
             ShowWindow(handle, SW_HIDE);
             return false;
         }
     }
-    const QPoint position = rendererCapturePosition(m_ownerWindow);
+    const QPoint position = m_waitingForCaptureItem
+        ? rendererParkingPosition() : rendererCapturePosition(m_ownerWindow);
     RECT geometry{};
     GetWindowRect(handle, &geometry);
     if (geometry.left != position.x() || geometry.top != position.y() || desiredStyle != exStyle) {
@@ -631,7 +734,18 @@ bool WallpaperEngineCapture::parkWindow()
             return false;
         }
     }
-    setRenderSize(m_renderSize);
+    if (!resizeRenderer(handle, m_renderSize))
+        return false;
+    if (m_waitingForCaptureItem) {
+        // A renderer can constrain WINDOWPOS while moving OR resizing. Trust
+        // the final rectangle only after all such mutations have completed.
+        if (!rendererIsOutsideDesktop(handle)) {
+            ShowWindow(handle, SW_HIDE);
+            return false;
+        }
+        if (!setRendererOpacity(handle, 255))
+            return false;
+    }
 #endif
     return true;
 }
@@ -652,8 +766,26 @@ void WallpaperEngineCapture::publishFrame()
     if (m_usingNativeCapture) {
         const QString error = m_nativeCapture->errorString();
         if (!error.isEmpty()) {
+            if (m_nativeTargetAttempts.size() < 3) {
+                m_nativeTargetAttempts.append(QJsonObject{
+                    {QStringLiteral("profile"), m_nativeCreateBeforeOpacity
+                        ? QStringLiteral("prepare_before_opacity") : m_nativeWithoutOwner
+                        ? QStringLiteral("standalone") : QStringLiteral("owned")},
+                    {QStringLiteral("error"), error},
+                    {QStringLiteral("steps"), m_nativeCapture->diagnosticReport().left(8192)}});
+            }
+            if (m_nativeCapture->targetWindowRejected()
+                && (retryNativeTargetWithoutOwner() || retryNativeTargetBeforeOpacity()))
+                return;
             fail(QStringLiteral("壁纸兼容捕获失败：%1").arg(error));
             return;
+        }
+        if (m_waitingForCaptureItem && m_nativeCapture->targetItemReady()) {
+            m_waitingForCaptureItem = false;
+            if (!parkWindow()) {
+                fail(QStringLiteral("无法恢复兼容壁纸窗口的不可见状态，已停止背景连接。"));
+                return;
+            }
         }
         image = m_nativeCapture->takeLatestFrame();
         if (!image.isNull() && image.size() != m_renderSize)
@@ -796,15 +928,21 @@ void WallpaperEngineCapture::setRenderSize(QSize pixels)
 #ifdef Q_OS_WIN
     const HWND handle = reinterpret_cast<HWND>(m_nativeWindow);
     if (isNamedRenderer(handle, m_windowName)) {
-        RECT rect{};
-        GetClientRect(handle, &rect);
-        if (rect.right != m_renderSize.width() || rect.bottom != m_renderSize.height()) {
-            const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(handle, GWL_STYLE));
-            const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(handle, GWL_EXSTYLE));
-            RECT desired{0, 0, m_renderSize.width(), m_renderSize.height()};
-            AdjustWindowRectEx(&desired, style, FALSE, exStyle);
-            SetWindowPos(handle, nullptr, 0, 0, desired.right - desired.left,
-                desired.bottom - desired.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        RECT actual{};
+        if (!changed && GetClientRect(handle, &actual)
+            && actual.right == m_renderSize.width() && actual.bottom == m_renderSize.height())
+            return;
+        if (m_waitingForCaptureItem && !setRendererOpacity(handle, 0)) {
+            fail(QStringLiteral("无法隐藏正在准备的壁纸窗口，已停止背景连接。"));
+            return;
+        }
+        if (!resizeRenderer(handle, m_renderSize)) {
+            fail(QStringLiteral("无法调整壁纸渲染窗口尺寸，已停止背景连接。"));
+            return;
+        }
+        if (!changed && m_waitingForCaptureItem && !parkWindow()) {
+            fail(QStringLiteral("无法恢复壁纸捕获准备状态，已停止背景连接。"));
+            return;
         }
     }
 #endif
@@ -849,7 +987,11 @@ void WallpaperEngineCapture::stop()
     m_captureErrorPending = false;
     m_captureRecoveryAttempts = 0;
     m_usingNativeCapture = false;
+    m_nativeWithoutOwner = false;
+    m_nativeCreateBeforeOpacity = false;
+    m_waitingForCaptureItem = false;
     m_captureDetail.clear();
+    m_nativeTargetAttempts = {};
     m_failureReport.clear();
     m_statusText = QStringLiteral("已停止动态壁纸连接");
     resetCaptureCandidate();
@@ -944,6 +1086,11 @@ QString WallpaperEngineCapture::buildDiagnosticReport(const QString &error) cons
         {QStringLiteral("capture_active"), error.isEmpty() && (m_usingNativeCapture
             ? m_nativeCapture->isActive() : m_capture->isActive())},
         {QStringLiteral("native_fallback"), m_usingNativeCapture},
+        {QStringLiteral("native_target_profile"), m_nativeCreateBeforeOpacity
+            ? QStringLiteral("prepare_before_opacity") : m_nativeWithoutOwner
+                ? QStringLiteral("standalone") : QStringLiteral("owned")},
+        {QStringLiteral("waiting_for_capture_item"), m_waitingForCaptureItem},
+        {QStringLiteral("native_target_attempts"), m_nativeTargetAttempts},
         {QStringLiteral("timeout_remaining_ms"), m_timeout.remainingTime()},
         {QStringLiteral("recovery_attempts"), m_captureRecoveryAttempts},
         {QStringLiteral("last_error"), error},
@@ -971,6 +1118,25 @@ QString WallpaperEngineCapture::buildDiagnosticReport(const QString &error) cons
         }
         report.insert(QStringLiteral("renderer_style"), QString::number(GetWindowLongPtrW(renderer, GWL_STYLE), 16));
         report.insert(QStringLiteral("renderer_ex_style"), QString::number(GetWindowLongPtrW(renderer, GWL_EXSTYLE), 16));
+        report.insert(QStringLiteral("renderer_class_style"), QString::number(GetClassLongPtrW(renderer, GCL_STYLE), 16));
+        report.insert(QStringLiteral("renderer_root_is_self"), GetAncestor(renderer, GA_ROOT) == renderer);
+        const HWND owner = GetWindow(renderer, GW_OWNER);
+        report.insert(QStringLiteral("renderer_has_owner"), owner != nullptr);
+        report.insert(QStringLiteral("renderer_owner_visible"), owner && IsWindowVisible(owner));
+        DWORD cloaked = 0;
+        const HRESULT cloakResult = DwmGetWindowAttribute(renderer, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+        report.insert(QStringLiteral("renderer_cloaked_query_hresult"), QStringLiteral("0x%1")
+            .arg(quint32(cloakResult), 8, 16, QLatin1Char('0')));
+        if (SUCCEEDED(cloakResult))
+            report.insert(QStringLiteral("renderer_cloaked"), int(cloaked));
+        DWORD affinity = 0;
+        SetLastError(0);
+        const bool affinityKnown = GetWindowDisplayAffinity(renderer, &affinity);
+        const DWORD affinityError = affinityKnown ? ERROR_SUCCESS : GetLastError();
+        report.insert(QStringLiteral("renderer_display_affinity_known"), affinityKnown);
+        report.insert(QStringLiteral("renderer_display_affinity_query_error"), int(affinityError));
+        if (affinityKnown)
+            report.insert(QStringLiteral("renderer_display_affinity"), int(affinity));
         COLORREF key{}; BYTE alpha{}; DWORD flags{};
         if (GetLayeredWindowAttributes(renderer, &key, &alpha, &flags))
             report.insert(QStringLiteral("renderer_opacity"), int(alpha));

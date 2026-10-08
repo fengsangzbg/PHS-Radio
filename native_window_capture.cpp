@@ -20,6 +20,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <dwmapi.h>
 #include <roapi.h>
 #include <winstring.h>
 #include <windows.foundation.h>
@@ -35,6 +36,8 @@ struct State {
     // active can become false before COM cleanup. Only the worker wrapper sets
     // finished after runCapture returns, with all its native resources released.
     std::atomic<bool> finished{true};
+    std::atomic<bool> targetRejected{false};
+    std::atomic<bool> itemReady{false};
     mutable std::mutex mutex;
     std::condition_variable wake;
     QImage latest;
@@ -153,6 +156,13 @@ public:
     explicit operator bool() const { return m_pointer != nullptr; }
     T **put() { reset(); return &m_pointer; }
     void **putVoid() { return reinterpret_cast<void **>(put()); }
+    void copyFrom(T *pointer)
+    {
+        if (pointer)
+            pointer->AddRef();
+        reset();
+        m_pointer = pointer;
+    }
     void reset()
     {
         if (T *pointer = std::exchange(m_pointer, nullptr))
@@ -187,6 +197,50 @@ void check(HRESULT result, const QString &stage)
         throw CaptureFailure{stage + QStringLiteral(": ") + hresultText(result)};
 }
 
+void recordWindowMetadata(HWND window, const std::shared_ptr<State> &state)
+{
+    wchar_t className[128]{};
+    const int classNameLength = GetClassNameW(window, className, int(sizeof(className) / sizeof(className[0])));
+    SetLastError(0);
+    const auto classStyle = GetClassLongPtrW(window, GCL_STYLE);
+    const DWORD classStyleError = GetLastError();
+    const auto style = GetWindowLongPtrW(window, GWL_STYLE);
+    const auto exStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    const HWND owner = GetWindow(window, GW_OWNER);
+    record(state, QStringLiteral("Target window: class=%1; GCL_STYLE=0x%2 (error %3); "
+        "style=0x%4; exstyle=0x%5; top_level=%6; owner_present=%7; owner_visible=%8")
+        .arg(classNameLength > 0 ? QString::fromWCharArray(className, classNameLength)
+                                : QStringLiteral("unavailable"))
+        .arg(quint32(classStyle), 0, 16).arg(classStyleError)
+        .arg(quint32(style), 0, 16).arg(quint32(exStyle), 0, 16)
+        .arg(GetAncestor(window, GA_ROOT) == window && !(style & WS_CHILD) ? 1 : 0)
+        .arg(owner ? 1 : 0).arg(owner && IsWindowVisible(owner) ? 1 : 0));
+    RECT client{};
+    const BOOL hasClient = GetClientRect(window, &client);
+    record(state, QStringLiteral("Target presentation: visible=%1; minimized=%2; "
+        "client_valid=%3; client=%4x%5")
+        .arg(IsWindowVisible(window) ? 1 : 0).arg(IsIconic(window) ? 1 : 0)
+        .arg(hasClient ? 1 : 0).arg(client.right - client.left).arg(client.bottom - client.top));
+    DWORD cloak = 0;
+    const HRESULT cloakResult = DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloak, sizeof(cloak));
+    record(state, QStringLiteral("Target DWM cloak: %1; value=0x%2")
+        .arg(hresultText(cloakResult)).arg(cloak, 0, 16));
+    DWORD affinity = 0;
+    SetLastError(0);
+    const BOOL hasAffinity = GetWindowDisplayAffinity(window, &affinity);
+    const DWORD affinityError = hasAffinity ? 0 : GetLastError();
+    record(state, QStringLiteral("Target display affinity: queried=%1; error=%2; value=0x%3")
+        .arg(hasAffinity ? 1 : 0).arg(affinityError).arg(affinity, 0, 16));
+    COLORREF colorKey = 0;
+    BYTE alpha = 0;
+    DWORD alphaFlags = 0;
+    SetLastError(0);
+    const BOOL hasOpacity = GetLayeredWindowAttributes(window, &colorKey, &alpha, &alphaFlags);
+    const DWORD opacityError = hasOpacity ? 0 : GetLastError();
+    record(state, QStringLiteral("Target opacity: queried=%1; error=%2; alpha=%3; flags=0x%4")
+        .arg(hasOpacity ? 1 : 0).arg(opacityError).arg(int(alpha)).arg(alphaFlags, 0, 16));
+}
+
 class HString final {
 public:
     explicit HString(const wchar_t *value)
@@ -206,6 +260,66 @@ template<class T> ComPtr<T> factory(const wchar_t *className, const QString &sta
     ComPtr<T> result;
     check(RoGetActivationFactory(name.get(), __uuidof(T), result.putVoid()), stage);
     return result;
+}
+
+void verifyOwnWindow(IGraphicsCaptureItemInterop *interop, HWND window,
+    const std::shared_ptr<State> &state)
+{
+    if (!window || state->cancelled.load(std::memory_order_acquire))
+        return;
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    const auto style = GetWindowLongPtrW(window, GWL_STYLE);
+    if (!IsWindow(window) || processId != GetCurrentProcessId() || !IsWindowVisible(window)
+        || IsIconic(window) || GetAncestor(window, GA_ROOT) != window || (style & WS_CHILD)) {
+        record(state, QStringLiteral("Own-window verification skipped: not a visible top-level window "
+            "belonging to this process."));
+        return;
+    }
+    // Only construct and release an item. Never create a frame pool, start a
+    // session, or read pixels from the verification window.
+    ComPtr<Capture::IGraphicsCaptureItem> item;
+    const HRESULT result = interop->CreateForWindow(window, __uuidof(Capture::IGraphicsCaptureItem),
+        item.putVoid());
+    record(state, QStringLiteral("Own-window verification/CreateForWindow: ") + hresultText(result));
+}
+
+ComPtr<Capture::IGraphicsCaptureItem> createCaptureItem(HWND window, HWND verificationWindow,
+    const std::shared_ptr<State> &state)
+{
+    recordWindowMetadata(window, state);
+    record(state, QStringLiteral("Target/CreateForWindow"));
+    auto interop = factory<IGraphicsCaptureItemInterop>(L"Windows.Graphics.Capture.GraphicsCaptureItem",
+        QStringLiteral("GraphicsCaptureItem activation"));
+    ComPtr<Capture::IGraphicsCaptureItem> item;
+    HRESULT result = E_INVALIDARG;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (state->cancelled.load(std::memory_order_acquire))
+            return {};
+        if (!IsWindow(window))
+            throw CaptureFailure{QStringLiteral("Target/CreateForWindow: target window was closed.")};
+        result = interop->CreateForWindow(window, __uuidof(Capture::IGraphicsCaptureItem), item.putVoid());
+        record(state, QStringLiteral("Target/CreateForWindow attempt %1: ").arg(attempt + 1)
+            + hresultText(result));
+        if (result != E_INVALIDARG)
+            break;
+        if (attempt != 2 && waitFor(state, 100))
+            return {};
+    }
+    if (state->cancelled.load(std::memory_order_acquire))
+        return {};
+    if (FAILED(result)) {
+        state->targetRejected.store(result == E_INVALIDARG, std::memory_order_release);
+        recordWindowMetadata(window, state);
+        verifyOwnWindow(interop.get(), verificationWindow, state);
+        check(result, QStringLiteral("Target/CreateForWindow"));
+    }
+    if (!item)
+        throw CaptureFailure{QStringLiteral("Target/CreateForWindow: Windows returned an empty capture item.")};
+    if (state->cancelled.load(std::memory_order_acquire))
+        return {};
+    state->itemReady.store(true, std::memory_order_release);
+    return item;
 }
 
 void closeObject(IUnknown *object)
@@ -242,9 +356,21 @@ struct CaptureResources final {
     }
 };
 
-ComPtr<IDXGIAdapter1> monitorAdapter(HWND window, const std::shared_ptr<State> &state)
+ComPtr<IDXGIAdapter1> monitorAdapter(HWND window, HWND monitorWindow, const std::shared_ptr<State> &state)
 {
-    const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    HWND monitorSource = window;
+    DWORD hintProcess = 0;
+    if (monitorWindow && IsWindow(monitorWindow)
+        && GetWindowThreadProcessId(monitorWindow, &hintProcess)
+        && hintProcess == GetCurrentProcessId()) {
+        monitorSource = monitorWindow;
+        record(state, QStringLiteral("Monitor selection: own-process destination-window hint."));
+    } else {
+        record(state, monitorWindow
+            ? QStringLiteral("Monitor selection: target window (invalid or foreign destination hint ignored).")
+            : QStringLiteral("Monitor selection: target window (no destination hint)."));
+    }
+    const HMONITOR monitor = MonitorFromWindow(monitorSource, MONITOR_DEFAULTTONEAREST);
     ComPtr<IDXGIFactory1> dxgi;
     HRESULT result = CreateDXGIFactory1(__uuidof(IDXGIFactory1), dxgi.putVoid());
     if (FAILED(result)) {
@@ -286,34 +412,18 @@ ComPtr<IDXGIAdapter1> monitorAdapter(HWND window, const std::shared_ptr<State> &
     return {};
 }
 
-std::unique_ptr<CaptureResources> initializeCapture(HWND window, IDXGIAdapter1 *adapter,
+std::unique_ptr<CaptureResources> initializeCapture(Capture::IGraphicsCaptureItem *item, IDXGIAdapter1 *adapter,
     Capture::IDirect3D11CaptureFramePoolStatics2 *poolFactory, const std::shared_ptr<State> &state,
     const QString &route)
 {
     auto resources = std::make_unique<CaptureResources>();
+    resources->item.copyFrom(item);
     record(state, route + QStringLiteral("/D3D11CreateDevice (BGRA_SUPPORT)"));
     check(D3D11CreateDevice(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
         nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
         resources->device.put(), nullptr, resources->context.put()),
         route + QStringLiteral("/D3D11CreateDevice"));
 
-    record(state, route + QStringLiteral("/CreateForWindow"));
-    auto interop = factory<IGraphicsCaptureItemInterop>(L"Windows.Graphics.Capture.GraphicsCaptureItem",
-        route + QStringLiteral("/GraphicsCaptureItem activation"));
-    HRESULT result = E_INVALIDARG;
-    for (int attempt = 0; attempt < 5; ++attempt) {
-        if (state->cancelled.load(std::memory_order_acquire))
-            return {};
-        if (!IsWindow(window))
-            throw CaptureFailure{route + QStringLiteral("/CreateForWindow: target window was closed.")};
-        result = interop->CreateForWindow(window, __uuidof(Capture::IGraphicsCaptureItem), resources->item.putVoid());
-        if (result != E_INVALIDARG)
-            break;
-        record(state, route + QStringLiteral("/CreateForWindow attempt %1: ").arg(attempt + 1) + hresultText(result));
-        if (attempt != 4 && waitFor(state, 100))
-            return {};
-    }
-    check(result, route + QStringLiteral("/CreateForWindow"));
     check(resources->item->get_Size(&resources->poolSize), route + QStringLiteral("/GraphicsCaptureItem.Size"));
     if (resources->poolSize.Width <= 0 || resources->poolSize.Height <= 0)
         throw CaptureFailure{route + QStringLiteral("/GraphicsCaptureItem.Size: the capture surface is empty.")};
@@ -335,7 +445,7 @@ std::unique_ptr<CaptureResources> initializeCapture(HWND window, IDXGIAdapter1 *
     // Optional properties may fail due to OS version or policy. They must not
     // turn a working core capture session into a terminal initialization error.
     ComPtr<Capture::IGraphicsCaptureSession2> cursor;
-    result = resources->session.as(cursor);
+    HRESULT result = resources->session.as(cursor);
     if (SUCCEEDED(result))
         result = cursor->put_IsCursorCaptureEnabled(false);
     record(state, route + QStringLiteral("/Optional cursor suppression: ") + hresultText(result));
@@ -413,7 +523,8 @@ QImage readFrame(CaptureResources &resources, Capture::IDirect3D11CaptureFrame *
     return image;
 }
 
-void runCapture(const std::shared_ptr<State> &state, quintptr nativeWindow)
+void runCapture(const std::shared_ptr<State> &state, quintptr nativeWindow, quintptr verificationWindow,
+    quintptr monitorWindow)
 {
     const HWND window = reinterpret_cast<HWND>(nativeWindow);
     const HRESULT apartmentResult = RoInitialize(RO_INIT_MULTITHREADED);
@@ -449,17 +560,22 @@ void runCapture(const std::shared_ptr<State> &state, quintptr nativeWindow)
         check(support->IsSupported(&supported), QStringLiteral("GraphicsCaptureSession.IsSupported"));
         if (!supported)
             throw CaptureFailure{QStringLiteral("Windows Graphics Capture is unsupported on this device.")};
+        // Capture-item eligibility depends on the target HWND, not on a D3D
+        // adapter. Create it once before trying either hardware device route.
+        auto item = createCaptureItem(window, reinterpret_cast<HWND>(verificationWindow), state);
+        if (!item || state->cancelled.load(std::memory_order_acquire))
+            return;
         // Request the free-threaded API explicitly; never use a DispatcherQueue
         // frame pool on this worker, which deliberately has no Qt event loop.
         auto poolFactory = factory<Capture::IDirect3D11CaptureFramePoolStatics2>(
             L"Windows.Graphics.Capture.Direct3D11CaptureFramePool",
             QStringLiteral("Direct3D11CaptureFramePool free-threaded API activation"));
-        auto adapter = monitorAdapter(window, state);
+        auto adapter = monitorAdapter(window, reinterpret_cast<HWND>(monitorWindow), state);
         std::unique_ptr<CaptureResources> resources;
         QString lastFailure;
         if (adapter && !state->cancelled.load(std::memory_order_acquire)) {
             try {
-                resources = initializeCapture(window, adapter.get(), poolFactory.get(), state,
+                resources = initializeCapture(item.get(), adapter.get(), poolFactory.get(), state,
                     QStringLiteral("Monitor hardware"));
             } catch (const CaptureFailure &error) {
                 lastFailure = error.message;
@@ -468,7 +584,7 @@ void runCapture(const std::shared_ptr<State> &state, quintptr nativeWindow)
         }
         if (!resources && !state->cancelled.load(std::memory_order_acquire)) {
             try {
-                resources = initializeCapture(window, nullptr, poolFactory.get(), state,
+                resources = initializeCapture(item.get(), nullptr, poolFactory.get(), state,
                     QStringLiteral("Default hardware"));
             } catch (const CaptureFailure &error) {
                 lastFailure = error.message;
@@ -538,7 +654,7 @@ NativeWindowCapture::NativeWindowCapture() : m_state(std::make_shared<NativeWind
 
 NativeWindowCapture::~NativeWindowCapture() { stop(); }
 
-void NativeWindowCapture::start(quintptr window)
+void NativeWindowCapture::start(quintptr window, quintptr verificationWindow, quintptr monitorWindow)
 {
     stop();
     auto state = std::make_shared<NativeWindowCaptureDetail::State>();
@@ -555,18 +671,20 @@ void NativeWindowCapture::start(quintptr window)
     }
     // There is no owner pointer or GUI callback in this closure. A cancelled
     // worker owns only its isolated state and may finish after this object dies.
-    QThread *worker = QThread::create([state, window] {
+    QThread *worker = QThread::create([state, window, verificationWindow, monitorWindow] {
         struct Finished final {
             std::shared_ptr<NativeWindowCaptureDetail::State> state;
             ~Finished() { NativeWindowCaptureDetail::finishWorker(state); }
         } finished{state};
-        NativeWindowCaptureDetail::runCapture(state, window);
+        NativeWindowCaptureDetail::runCapture(state, window, verificationWindow, monitorWindow);
     });
     worker->setObjectName(QStringLiteral("nativeWallpaperCapture"));
     QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start();
 #else
     Q_UNUSED(window);
+    Q_UNUSED(verificationWindow);
+    Q_UNUSED(monitorWindow);
     NativeWindowCaptureDetail::fail(state, QStringLiteral("Native window capture is available only on Windows."));
 #endif
 }
@@ -594,6 +712,17 @@ QString NativeWindowCapture::errorString() const
 {
     std::lock_guard<std::mutex> lock(m_state->mutex);
     return m_state->error;
+}
+
+bool NativeWindowCapture::targetWindowRejected() const
+{
+    return m_state->targetRejected.load(std::memory_order_acquire);
+}
+
+bool NativeWindowCapture::targetItemReady() const
+{
+    return m_state->itemReady.load(std::memory_order_acquire)
+        && !m_state->cancelled.load(std::memory_order_acquire);
 }
 
 QString NativeWindowCapture::diagnosticReport() const

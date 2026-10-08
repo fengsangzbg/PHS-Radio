@@ -13,7 +13,7 @@ param(
     [ValidateSet('Release', 'RelWithDebInfo', 'MinSizeRel')]
     [string] $Configuration = 'Release',
     [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta(?:\.[1-9][0-9]*)?)?$')]
-    [string] $Version = '0.2.4-beta.1',
+    [string] $Version = '0.2.4-beta.2',
     [switch] $ValidateOnly
 )
 

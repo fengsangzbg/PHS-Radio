@@ -4,6 +4,7 @@
 #include <QImage>
 #include <QFutureWatcher>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QSize>
 #include <QString>
 #include <QTimer>
@@ -53,6 +54,8 @@ private:
     void resetCaptureCandidate();
     void handleCaptureError(int error, const QString &detail);
     bool startNativeFallback();
+    bool retryNativeTargetWithoutOwner();
+    bool retryNativeTargetBeforeOpacity();
     void updateStatus(const QString &status);
     QString buildDiagnosticReport(const QString &error = {}) const;
     void publishFrame();
@@ -81,6 +84,7 @@ private:
     QString m_statusText = QStringLiteral("尚未连接动态壁纸");
     QString m_failureReport;
     QString m_captureDetail;
+    QJsonArray m_nativeTargetAttempts;
     std::shared_ptr<LatestVideoFrame> m_frames = std::make_shared<LatestVideoFrame>();
     QFutureWatcher<QImage> *m_rgbWatcher = nullptr;
     QImage m_pendingImage;
@@ -98,6 +102,9 @@ private:
     int m_captureRecoveryAttempts = 0;
     bool m_captureErrorPending = false;
     bool m_usingNativeCapture = false;
+    bool m_nativeWithoutOwner = false;
+    bool m_nativeCreateBeforeOpacity = false;
+    bool m_waitingForCaptureItem = false;
     bool m_requested = false;
     bool m_paused = false;
     bool m_announced = false;

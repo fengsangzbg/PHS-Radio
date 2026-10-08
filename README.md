@@ -10,7 +10,7 @@
 
 推荐新用户下载 **v0.2.3 正式版完整包**：保留 beta 系列的界面与性能改进，已包含酷狗设备身份保存、账号切换与搜索请求修复，无需另外下载或覆盖补丁。
 
-**v0.2.4-beta.1 为 Wallpaper Engine 兼容性测试版。** 修复打开主题窗口时误暂停壁纸连接的问题；Qt 捕获失败后自动尝试原生 Windows 捕获，并在主题面板保留连接状态与“复制连接信息”按钮。本机真实动态壁纸、高清缩放、暂停恢复和退出检查已通过；另一台电脑的“参数错误”仍需复测。测试版需要手动下载，软件的更新按钮仍使用正式版通道。
+**v0.2.4-beta.2 为 Wallpaper Engine 通用兼容性测试版。** 根据系统实际捕获能力和壁纸窗口状态选择连接方式。Windows 拒绝创建捕获目标时，自动有限尝试不同的窗口归属与透明度初始化方式，并保留各次尝试的诊断。本机回归及真实网页、场景壁纸的高清动态捕获、缩放、暂停恢复与退出检查已通过，跨设备兼容仍需复测。测试版需要手动下载，软件的更新按钮仍使用正式版通道。
 
 ## 可以做什么
 
@@ -52,6 +52,8 @@ v0.2.1 首次升级需要手动下载新版完整包；v0.2.2 及之后的旧版
 
 支持自动发现已安装的 Wallpaper Engine 与已下载项目。视频壁纸可直接循环播放；场景与网页壁纸使用本机 Wallpaper Engine 创建软件专属窗口并连续捕获动态画面，需要先安装并运行 Wallpaper Engine。原工程文件与桌面壁纸设置不会被修改，软件背景在加载前配置静音。Wallpaper Engine 本体和壁纸作品不随软件分发。
 
+beta.2 的兼容路径由实际捕获结果触发：保留正常连接方式；遇到目标窗口参数错误时，尝试解除软件辅助窗口的归属，必要时在屏幕外完成捕获目标初始化，再恢复透明状态继续渲染。若仍无法连接，主题面板保留具体失败阶段，可点击“复制连接信息”用于反馈。不同 Windows 环境与壁纸类型仍需验证。
+
 壁纸与封面保留源图，按屏幕实际像素显示；实际清晰度、动态帧率仍取决于原始素材、Wallpaper Engine 设置与电脑性能。
 
 场景与网页壁纸的源帧率使用 Wallpaper Engine 的全局设置：在 Wallpaper Engine 的“设置 → 性能”中修改并应用，会同时影响桌面和播放器中的该类背景。当前 Windows 捕获后端最高为 60 FPS，实际呈现还受屏幕刷新率与绘制开销影响；将 WE 设为 165 FPS 不代表播放器能输出 165 FPS。视频壁纸保持原视频帧率，调整 WE 的限帧不会插入额外视频帧。
@@ -66,14 +68,14 @@ Dock 音量只控制软件内的音乐，不改变 Windows 主音量；背景继
 cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPHSRADIO_KUGOU_ONLY=ON
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.4-beta.1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.2.4-beta.2
 ```
 
 本机服务源码与依赖锁位于 `services/kugou`，开发或重新打包前运行 `npm ci --prefix services/kugou --omit=dev --ignore-scripts`。服务只监听本机 `127.0.0.1:3737`。
 
 `PHSRADIO_KUGOU_ONLY=ON` 生成仅开放酷狗的发布版。未开放平台的开发代码保留在仓库，测试不会使用真实账号。更多实现细节见 [开发说明](docs/development.md)。
 
-当前开发构建与打包默认为 `0.2.4-beta.1`。已有构建目录需显式传入 `-DPHSRADIO_PRERELEASE=beta.1` 更新缓存。构建正式版时传入 `-DPHSRADIO_PRERELEASE=` 清空预发布后缀，并以相同的基础版本号打包。Beta 版的更新检查仍查询正式 Release，可升级到版本号更高的正式版本。
+当前开发构建与打包默认为 `0.2.4-beta.2`。已有构建目录需显式传入 `'-DPHSRADIO_PRERELEASE=beta.2'` 更新缓存。构建正式版时传入 `'-DPHSRADIO_PRERELEASE='` 清空预发布后缀，并以相同的基础版本号打包。Beta 版的更新检查仍查询正式 Release，可升级到版本号更高的正式版本。
 
 ## 许可与依赖源码
 

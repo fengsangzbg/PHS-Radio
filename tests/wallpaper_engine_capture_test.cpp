@@ -541,11 +541,94 @@ public:
     ~NativeFixture() { if (IsWindow(window)) DestroyWindow(window); }
 };
 
+class ResizeClamp final {
+public:
+    explicit ResizeClamp(HWND window) : m_window(window)
+    {
+        m_originalUserData = GetWindowLongPtrW(window, GWLP_USERDATA);
+        m_originalProcedure = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(window, GWLP_WNDPROC));
+        SetLastError(0);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+        check(GetLastError() == ERROR_SUCCESS, "The owned clamp fixture must accept its isolated observer state.");
+        SetLastError(0);
+        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&ResizeClamp::procedure));
+        const DWORD error = GetLastError();
+        if (error != ERROR_SUCCESS)
+            SetWindowLongPtrW(window, GWLP_USERDATA, m_originalUserData);
+        check(error == ERROR_SUCCESS, "The owned clamp fixture must accept its isolated window procedure.");
+    }
+    ~ResizeClamp()
+    {
+        if (IsWindow(m_window)) {
+            SetWindowLongPtrW(m_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_originalProcedure));
+            SetWindowLongPtrW(m_window, GWLP_USERDATA, m_originalUserData);
+        }
+    }
+    int acceptedOffscreenMoves = 0;
+    int clampedResizes = 0;
+    bool exposedDesktop = false;
+private:
+    void observe(HWND window)
+    {
+        COLORREF color{}; BYTE alpha = 0; DWORD flags{}; RECT bounds{};
+        if (!IsWindowVisible(window) || !GetLayeredWindowAttributes(window, &color, &alpha, &flags)
+            || alpha == 0 || !(flags & LWA_ALPHA) || !GetWindowRect(window, &bounds))
+            return;
+        const QRect target(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
+        const QRect desktop(GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        exposedDesktop |= target.intersects(desktop);
+    }
+    static LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        auto *state = reinterpret_cast<ResizeClamp *>(GetWindowLongPtrW(window, GWLP_USERDATA));
+        state->observe(window);
+        if (message == WM_WINDOWPOSCHANGING) {
+            auto *position = reinterpret_cast<WINDOWPOS *>(lParam);
+            const int right = GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            if (!(position->flags & SWP_NOMOVE) && position->x >= right)
+                ++state->acceptedOffscreenMoves;
+            if (!(position->flags & SWP_NOSIZE)) {
+                ++state->clampedResizes;
+                position->flags &= ~SWP_NOMOVE;
+                position->x = GetSystemMetrics(SM_XVIRTUALSCREEN) + 16;
+                position->y = GetSystemMetrics(SM_YVIRTUALSCREEN) + 16;
+            }
+        }
+        const LRESULT result = CallWindowProcW(state->m_originalProcedure, window, message, wParam, lParam);
+        state->observe(window);
+        return result;
+    }
+    HWND m_window = nullptr;
+    WNDPROC m_originalProcedure = nullptr;
+    LONG_PTR m_originalUserData = 0;
+};
+
 bool fullyTransparent(HWND window)
 {
     COLORREF color{}; BYTE alpha = 255; DWORD flags{};
     return GetLayeredWindowAttributes(window, &color, &alpha, &flags)
         && alpha == 0 && (flags & LWA_ALPHA);
+}
+
+void checkOffscreenTarget(HWND window)
+{
+    RECT bounds{};
+    check(GetWindowRect(window, &bounds), "The preparation fixture must have readable native bounds.");
+    const QRect target(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
+    const QRect desktop(GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    check(!target.isEmpty() && !desktop.isEmpty() && !target.intersects(desktop),
+          "Every non-zero-alpha preparation surface must lie completely outside the whole virtual desktop.");
+}
+
+void checkPreparedTarget(HWND window)
+{
+    COLORREF color{}; BYTE alpha = 0; DWORD flags{};
+    check(IsWindowVisible(window) && GetLayeredWindowAttributes(window, &color, &alpha, &flags)
+              && alpha > 0 && (flags & LWA_ALPHA) && GetWindow(window, GW_OWNER) == nullptr,
+          "Preparing a capture item must use an ownerless visible native surface with non-zero alpha.");
+    checkOffscreenTarget(window);
 }
 
 QSize nativeSize(HWND window)
@@ -584,7 +667,8 @@ QJsonObject connectionDiagnostics(WallpaperEngineCapture &capture)
         QStringLiteral("renderer_found"), QStringLiteral("renderer_visible"),
         QStringLiteral("renderer_client_width"), QStringLiteral("renderer_client_height"),
         QStringLiteral("capture_active"), QStringLiteral("last_error"),
-        QStringLiteral("timeout_remaining_ms")};
+        QStringLiteral("timeout_remaining_ms"), QStringLiteral("native_target_profile"),
+        QStringLiteral("waiting_for_capture_item"), QStringLiteral("native_target_attempts")};
     const QSet<QString> optionalFields{
         QStringLiteral("application_version"), QStringLiteral("qt_version"),
         QStringLiteral("windows_version"), QStringLiteral("system"),
@@ -592,7 +676,12 @@ QJsonObject connectionDiagnostics(WallpaperEngineCapture &capture)
         QStringLiteral("recovery_attempts"), QStringLiteral("qt_capture_error_detail"),
         QStringLiteral("qt_window_capture_backend_requested"), QStringLiteral("display_adapters"),
         QStringLiteral("renderer_minimized"), QStringLiteral("renderer_style"),
-        QStringLiteral("renderer_ex_style"), QStringLiteral("renderer_opacity"), QStringLiteral("native_capture")};
+        QStringLiteral("renderer_ex_style"), QStringLiteral("renderer_opacity"), QStringLiteral("native_capture"),
+        QStringLiteral("renderer_class_style"), QStringLiteral("renderer_root_is_self"),
+        QStringLiteral("renderer_has_owner"), QStringLiteral("renderer_owner_visible"),
+        QStringLiteral("renderer_cloaked_query_hresult"), QStringLiteral("renderer_cloaked"),
+        QStringLiteral("renderer_display_affinity_known"), QStringLiteral("renderer_display_affinity_query_error"),
+        QStringLiteral("renderer_display_affinity")};
     for (const QString &field : fields)
         check(object.contains(field), "Diagnostics must contain every documented connection-state field.");
     for (const QString &field : object.keys())
@@ -603,10 +692,41 @@ QJsonObject connectionDiagnostics(WallpaperEngineCapture &capture)
               && object.value(QStringLiteral("last_error")).isString(),
           "Diagnostic status must match the current public status, and errors must be text.");
     for (const QString &field : {QStringLiteral("requested"), QStringLiteral("paused"),
-             QStringLiteral("renderer_found"), QStringLiteral("renderer_visible"), QStringLiteral("capture_active")})
+             QStringLiteral("renderer_found"), QStringLiteral("renderer_visible"), QStringLiteral("capture_active"),
+             QStringLiteral("waiting_for_capture_item")})
         check(object.value(field).isBool(), "Diagnostic state flags must remain JSON booleans.");
+    const QString profile = object.value(QStringLiteral("native_target_profile")).toString();
+    check(profile == QStringLiteral("owned") || profile == QStringLiteral("standalone")
+              || profile == QStringLiteral("prepare_before_opacity"),
+          "Native target diagnostics must identify one of the three bounded window profiles.");
+    check(object.value(QStringLiteral("native_target_attempts")).isArray(),
+          "Native target attempt history must remain a JSON array.");
+    const QJsonArray attempts = object.value(QStringLiteral("native_target_attempts")).toArray();
+    check(attempts.size() <= 3, "Native failure history must never exceed the three bounded target profiles.");
+    for (const QJsonValue &attempt : attempts) {
+        check(attempt.isObject(), "Each native target attempt must be an object.");
+        const QJsonObject entry = attempt.toObject();
+        check(entry.size() == 3 && entry.value(QStringLiteral("profile")).isString()
+                  && entry.value(QStringLiteral("error")).isString() && entry.value(QStringLiteral("steps")).isString()
+                  && entry.value(QStringLiteral("steps")).toString().size() <= 8192,
+              "Native attempt diagnostics must contain only bounded profile, error and capture-step text.");
+        const QString attemptedProfile = entry.value(QStringLiteral("profile")).toString();
+        check(attemptedProfile == QStringLiteral("owned") || attemptedProfile == QStringLiteral("standalone")
+                  || attemptedProfile == QStringLiteral("prepare_before_opacity"),
+              "Every saved target attempt must identify a supported bounded capture profile.");
+    }
+    for (const QString &field : {QStringLiteral("renderer_root_is_self"), QStringLiteral("renderer_has_owner"),
+             QStringLiteral("renderer_owner_visible"), QStringLiteral("renderer_display_affinity_known")})
+        if (object.contains(field))
+            check(object.value(field).isBool(), "Native window eligibility flags must remain JSON booleans.");
+    for (const QString &field : {QStringLiteral("renderer_class_style"), QStringLiteral("renderer_cloaked_query_hresult")})
+        if (object.contains(field))
+            check(object.value(field).isString(), "Native style and HRESULT diagnostics must remain text.");
     for (const QString &field : {QStringLiteral("renderer_client_width"), QStringLiteral("renderer_client_height"),
-             QStringLiteral("timeout_remaining_ms")}) {
+             QStringLiteral("timeout_remaining_ms"), QStringLiteral("renderer_cloaked"),
+             QStringLiteral("renderer_display_affinity_query_error"), QStringLiteral("renderer_display_affinity")}) {
+        if (!object.contains(field))
+            continue;
         const QJsonValue value = object.value(field);
         check(value.isDouble() && value.toDouble() == double(value.toInt()),
               "Diagnostic sizes and remaining deadlines must remain JSON integers.");
@@ -1041,6 +1161,351 @@ void nativeIsolationTest()
           "A stale HWND must not hide, resize or close an unrelated window.");
 }
 
+void suspendNativeFixture(WallpaperEngineCapture &capture)
+{
+    // Window-profile tests exercise ownership, independently of GPU support or
+    // asynchronous worker initialization. The real live test verifies pixels.
+    capture.m_frameTimer.stop();
+    capture.m_timeout.stop();
+    capture.m_nativeCapture->stop();
+}
+
+void nativeWindowProfileTest()
+{
+    const QString name = rendererFixtureName();
+    NativeFixture renderer(name);
+    WallpaperEngineCapture capture;
+    capture.m_requested = true;
+    capture.m_windowName = name;
+    capture.m_renderSize = QSize(900, 600);
+    capture.m_executable = QCoreApplication::applicationFilePath();
+    check(capture.parkWindow() && fullyTransparent(renderer.window),
+          "The initial renderer profile must retain zero desktop opacity.");
+    const HWND hiddenOwner = reinterpret_cast<HWND>(capture.m_hiddenOwner);
+    check(hiddenOwner && GetWindow(renderer.window, GW_OWNER) == hiddenOwner
+              && !capture.m_nativeWithoutOwner
+              && connectionDiagnostics(capture).value(QStringLiteral("native_target_profile")).toString()
+                  == QStringLiteral("owned"),
+          "The original capture profile must keep its existing hidden owner.");
+    capture.m_usingNativeCapture = true;
+    int profileNotifications = 0;
+    capture.onStatusChanged = [&](const QString &) {
+        ++profileNotifications;
+        check(fullyTransparent(renderer.window) && GetWindow(renderer.window, GW_OWNER) == nullptr,
+              "Every standalone-profile status transition must preserve zero opacity and no owner.");
+    };
+    const quint64 oldGeneration = capture.m_captureGeneration;
+    check(capture.retryNativeTargetWithoutOwner() && capture.m_nativeWithoutOwner
+              && capture.m_captureGeneration != oldGeneration && profileNotifications == 1,
+          "An eligible named renderer must switch to the standalone profile in one bounded native restart.");
+    suspendNativeFixture(capture);
+    const quint64 standaloneGeneration = capture.m_captureGeneration;
+    for (int attempt = 0; attempt < 3; ++attempt)
+        check(!capture.retryNativeTargetWithoutOwner()
+                  && capture.m_captureGeneration == standaloneGeneration && profileNotifications == 1,
+              "A standalone renderer must reject repeated profile retries without restarting or looping.");
+    const QJsonObject standalone = connectionDiagnostics(capture);
+    check(standalone.value(QStringLiteral("native_target_profile")).toString() == QStringLiteral("standalone")
+              && !standalone.value(QStringLiteral("renderer_has_owner")).toBool()
+              && !standalone.value(QStringLiteral("renderer_owner_visible")).toBool()
+              && standalone.value(QStringLiteral("renderer_root_is_self")).toBool()
+              && standalone.value(QStringLiteral("renderer_opacity")).toInt(-1) == 0,
+          "Standalone diagnostics must describe the ownerless, transparent top-level target.");
+    events(350); // The real visibility guard runs while frame/GPU checks are suspended.
+    check(capture.m_requested && capture.m_nativeWithoutOwner && fullyTransparent(renderer.window)
+              && GetWindow(renderer.window, GW_OWNER) == nullptr,
+          "The live visibility guard must preserve the standalone profile instead of restoring its hidden owner.");
+
+    capture.setRenderSize(QSize(1200, 800));
+    suspendNativeFixture(capture);
+    check(capture.m_nativeWithoutOwner && nativeSize(renderer.window) == QSize(1200, 800)
+              && fullyTransparent(renderer.window) && GetWindow(renderer.window, GW_OWNER) == nullptr,
+          "An active render-size change must preserve the selected standalone profile and zero opacity.");
+    capture.setPaused(true);
+    check(capture.m_nativeWithoutOwner && !IsWindowVisible(renderer.window)
+              && fullyTransparent(renderer.window) && GetWindow(renderer.window, GW_OWNER) == nullptr,
+          "Pausing must hide the standalone renderer while retaining its profile and zero-opacity style.");
+    capture.setRenderSize(QSize(1300, 850));
+    capture.setPaused(false);
+    suspendNativeFixture(capture);
+    check(capture.m_requested && !capture.m_paused && capture.m_nativeWithoutOwner
+              && IsWindowVisible(renderer.window) && nativeSize(renderer.window) == QSize(1300, 850)
+              && fullyTransparent(renderer.window) && GetWindow(renderer.window, GW_OWNER) == nullptr,
+          "Resuming after a paused resize must keep the ownerless target and its requested dimensions.");
+    capture.onStatusChanged = {};
+    capture.m_executable.clear();
+    capture.stop();
+    check(!capture.m_nativeWithoutOwner && !capture.m_requested && !IsWindow(hiddenOwner)
+              && connectionDiagnostics(capture).value(QStringLiteral("native_target_profile")).toString()
+                  == QStringLiteral("owned"),
+          "Explicit stop must release the old owner and reset the one-shot profile selection.");
+    events(20);
+    const QString nextName = rendererFixtureName();
+    NativeFixture nextRenderer(nextName);
+    capture.m_requested = true;
+    capture.m_windowName = nextName;
+    check(capture.parkWindow() && !capture.m_nativeWithoutOwner
+              && GetWindow(nextRenderer.window, GW_OWNER) == reinterpret_cast<HWND>(capture.m_hiddenOwner)
+              && fullyTransparent(nextRenderer.window),
+          "The next source must start in its original hidden-owner profile instead of inheriting standalone mode.");
+    capture.stop();
+}
+
+void nativePreparedWindowProfileTest()
+{
+    const QString name = rendererFixtureName();
+    NativeFixture renderer(name);
+    WallpaperEngineCapture capture;
+    capture.m_requested = true;
+    capture.m_windowName = name;
+    capture.m_renderSize = QSize(900, 600);
+    capture.m_executable = QCoreApplication::applicationFilePath();
+    capture.m_usingNativeCapture = true;
+    capture.m_nativeWithoutOwner = true;
+    check(capture.parkWindow() && fullyTransparent(renderer.window),
+          "The preparation fixture must begin in the preceding transparent standalone profile.");
+    capture.onStatusChanged = [&](const QString &) {
+        if (capture.m_waitingForCaptureItem && !capture.m_paused)
+            checkPreparedTarget(renderer.window);
+    };
+    const quint64 precedingGeneration = capture.m_captureGeneration;
+    check(capture.retryNativeTargetBeforeOpacity() && capture.m_nativeCreateBeforeOpacity
+              && capture.m_waitingForCaptureItem && capture.m_captureGeneration != precedingGeneration,
+          "The final profile must restart capture once with item preparation pending.");
+    suspendNativeFixture(capture);
+    checkPreparedTarget(renderer.window);
+    const quint64 preparationGeneration = capture.m_captureGeneration;
+    capture.setRenderSize(QSize(900, 600));
+    checkPreparedTarget(renderer.window);
+    check(capture.m_captureGeneration == preparationGeneration && capture.m_waitingForCaptureItem,
+          "A same-size notification must preserve preparation opacity immediately without restarting or waiting for a guard tick.");
+    for (int attempt = 0; attempt < 3; ++attempt)
+        check(!capture.retryNativeTargetBeforeOpacity() && !capture.retryNativeTargetWithoutOwner()
+                  && capture.m_captureGeneration == preparationGeneration,
+              "The final profile must reject every repeated retry without cycling through earlier profiles.");
+    const QJsonObject preparing = connectionDiagnostics(capture);
+    check(preparing.value(QStringLiteral("native_target_profile")).toString() == QStringLiteral("prepare_before_opacity")
+              && preparing.value(QStringLiteral("waiting_for_capture_item")).toBool()
+              && preparing.value(QStringLiteral("renderer_opacity")).toInt() > 0
+              && !preparing.value(QStringLiteral("renderer_has_owner")).toBool(),
+          "Preparation diagnostics must describe the pending offscreen ownerless capture item.");
+    events(350);
+    check(capture.m_requested && capture.m_waitingForCaptureItem && capture.m_nativeCreateBeforeOpacity,
+          "The visibility guard must retain the preparation stage while no item has been published.");
+    checkPreparedTarget(renderer.window);
+
+    capture.setRenderSize(QSize(1200, 800));
+    suspendNativeFixture(capture);
+    check(capture.m_nativeCreateBeforeOpacity && capture.m_waitingForCaptureItem
+              && nativeSize(renderer.window) == QSize(1200, 800),
+          "An active resize must create a new offscreen preparation stage in the same final profile.");
+    checkPreparedTarget(renderer.window);
+    capture.setPaused(true);
+    check(capture.m_nativeCreateBeforeOpacity && capture.m_requested && !IsWindowVisible(renderer.window)
+              && !capture.m_timeout.isActive() && !capture.m_frameTimer.isActive(),
+          "Pausing during preparation must immediately hide the surface and suspend its deadline and frames.");
+    checkOffscreenTarget(renderer.window);
+    capture.setRenderSize(QSize(1300, 850));
+    checkOffscreenTarget(renderer.window);
+    capture.setPaused(false);
+    suspendNativeFixture(capture);
+    check(capture.m_nativeCreateBeforeOpacity && capture.m_waitingForCaptureItem
+              && !capture.m_paused && nativeSize(renderer.window) == QSize(1300, 850),
+          "Resuming after a paused resize must repeat offscreen item preparation in the final profile.");
+    checkPreparedTarget(renderer.window);
+    capture.onStatusChanged = {};
+    capture.m_executable.clear();
+    capture.stop();
+    check(!capture.m_requested && !capture.m_nativeWithoutOwner && !capture.m_nativeCreateBeforeOpacity
+              && !capture.m_waitingForCaptureItem && !IsWindowVisible(renderer.window)
+              && capture.m_nativeCapture->takeLatestFrame().isNull(),
+          "Cancelling preparation must hide the opaque offscreen surface and clear every profile flag and buffered frame.");
+    const QJsonObject stopped = connectionDiagnostics(capture);
+    check(stopped.value(QStringLiteral("native_target_profile")).toString() == QStringLiteral("owned")
+              && !stopped.value(QStringLiteral("waiting_for_capture_item")).toBool(),
+          "Stopped preparation diagnostics must reset to the original profile with no pending item.");
+    events(20);
+    const QString nextName = rendererFixtureName();
+    NativeFixture nextRenderer(nextName);
+    capture.m_requested = true;
+    capture.m_windowName = nextName;
+    check(capture.parkWindow() && !capture.m_nativeCreateBeforeOpacity && !capture.m_waitingForCaptureItem
+              && fullyTransparent(nextRenderer.window)
+              && GetWindow(nextRenderer.window, GW_OWNER) == reinterpret_cast<HWND>(capture.m_hiddenOwner),
+          "A new source must begin transparent with its original owner, without inheriting item-preparation state.");
+    capture.stop();
+}
+
+void nativePreparationResizeClampTest()
+{
+    NativeFixture renderer(rendererFixtureName());
+    check(SetWindowLongPtrW(renderer.window, GWL_EXSTYLE,
+              GetWindowLongPtrW(renderer.window, GWL_EXSTYLE) | WS_EX_LAYERED)
+              && SetLayeredWindowAttributes(renderer.window, 0, 255, LWA_ALPHA),
+          "The offscreen adversarial fixture must begin with a readable non-zero preparation opacity.");
+    checkPreparedTarget(renderer.window);
+    WallpaperEngineCapture capture;
+    capture.m_requested = true;
+    wchar_t title[256]{};
+    GetWindowTextW(renderer.window, title, 256);
+    capture.m_windowName = QString::fromWCharArray(title);
+    capture.m_nativeWindow = reinterpret_cast<quintptr>(renderer.window);
+    capture.m_nativeWithoutOwner = true;
+    capture.m_nativeCreateBeforeOpacity = true;
+    capture.m_waitingForCaptureItem = true;
+    capture.m_renderSize = QSize(1400, 900); // Force a sizing message after the accepted offscreen move.
+    ResizeClamp clamp(renderer.window);
+    check(!capture.parkWindow() && clamp.acceptedOffscreenMoves >= 1 && clamp.clampedResizes >= 1,
+          "Preparation must reject a renderer that accepts the offscreen move but clamps a later resize onto the desktop.");
+    check(!clamp.exposedDesktop && (!IsWindowVisible(renderer.window) || fullyTransparent(renderer.window)),
+          "Style, ownership, move and resize mutations must never expose non-zero-alpha pixels on the desktop, even briefly.");
+    capture.stop();
+}
+
+void nativeAttemptHistoryTest()
+{
+    NativeFixture renderer(rendererFixtureName());
+    WallpaperEngineCapture capture;
+    capture.m_requested = true;
+    wchar_t title[256]{};
+    GetWindowTextW(renderer.window, title, 256);
+    capture.m_windowName = QString::fromWCharArray(title);
+    capture.m_nativeWindow = reinterpret_cast<quintptr>(renderer.window);
+    capture.m_renderSize = QSize(900, 600);
+    capture.m_usingNativeCapture = true;
+    capture.m_nativeWithoutOwner = true;
+    capture.m_nativeCreateBeforeOpacity = true;
+    const QJsonArray precedingAttempts{
+        QJsonObject{{QStringLiteral("profile"), QStringLiteral("owned")},
+            {QStringLiteral("error"), QStringLiteral("Owned target-item fixture failure")},
+            {QStringLiteral("steps"), QStringLiteral("Owned fixture capture steps")}},
+        QJsonObject{{QStringLiteral("profile"), QStringLiteral("standalone")},
+            {QStringLiteral("error"), QStringLiteral("Standalone target-item fixture failure")},
+            {QStringLiteral("steps"), QStringLiteral("Standalone fixture capture steps")}}};
+    capture.m_nativeTargetAttempts = precedingAttempts;
+    // A deterministic unrelated native validation error records the final
+    // attempt and terminates; no GPU or E_INVALIDARG reproduction is required.
+    capture.m_nativeCapture->start(0);
+    const QString nativeError = capture.m_nativeCapture->errorString();
+    const QString nativeSteps = capture.m_nativeCapture->diagnosticReport();
+    int errors = 0;
+    QJsonObject callbackReport;
+    capture.onError = [&](const QString &) { ++errors; callbackReport = connectionDiagnostics(capture); };
+    capture.m_frameSchedule.reset(-1000000000);
+    capture.publishFrame();
+    QJsonArray expected = precedingAttempts;
+    expected.append(QJsonObject{{QStringLiteral("profile"), QStringLiteral("prepare_before_opacity")},
+        {QStringLiteral("error"), nativeError}, {QStringLiteral("steps"), nativeSteps}});
+    check(errors == 1 && !capture.m_requested && capture.m_nativeTargetAttempts.isEmpty()
+              && callbackReport.value(QStringLiteral("native_target_attempts")).toArray() == expected
+              && connectionDiagnostics(capture).value(QStringLiteral("native_target_attempts")).toArray() == expected,
+          "Terminal native failure must record the final profile and retain every preceding attempt in its callback and snapshot.");
+    capture.stop();
+    check(connectionDiagnostics(capture).value(QStringLiteral("native_target_attempts")).toArray().isEmpty(),
+          "An explicit stop must clear the retained native attempt history.");
+
+    capture.m_requested = true;
+    capture.m_usingNativeCapture = true;
+    capture.m_nativeTargetAttempts = expected;
+    capture.m_nativeCapture->start(0);
+    capture.m_frameSchedule.reset(-1000000000);
+    capture.publishFrame();
+    check(errors == 2
+              && connectionDiagnostics(capture).value(QStringLiteral("native_target_attempts")).toArray() == expected,
+          "Recording another terminal error must never expand an already complete three-attempt history.");
+    capture.start(QString(), QString(), QSize(900, 600));
+    check(capture.m_nativeTargetAttempts.isEmpty()
+              && connectionDiagnostics(capture).value(QStringLiteral("native_target_attempts")).toArray().isEmpty(),
+          "A new-source attempt must clear prior native profile failures before reporting its own validation state.");
+    capture.stop();
+}
+
+void nativeProfileLifetimeAndIsolationTest()
+{
+    const QString name = rendererFixtureName();
+    NativeFixture lifetimeRenderer(name);
+    auto *capture = new WallpaperEngineCapture;
+    QPointer<WallpaperEngineCapture> guard(capture);
+    capture->m_requested = true;
+    capture->m_windowName = name;
+    capture->m_renderSize = QSize(900, 600);
+    capture->m_usingNativeCapture = true;
+    check(capture->parkWindow(), "The profile lifetime fixture must own its named renderer.");
+    int callbacks = 0;
+    capture->onStatusChanged = [&](const QString &) { ++callbacks; delete capture; };
+    check(capture->retryNativeTargetWithoutOwner() && guard.isNull() && callbacks == 1,
+          "A profile-change status callback may destroy capture without touching its deleted owner afterward.");
+    events(20);
+    check(!IsWindow(lifetimeRenderer.window),
+          "Profile-transition destruction must close the renderer and cancel its asynchronous worker.");
+
+    const QString preparationName = rendererFixtureName();
+    NativeFixture preparationRenderer(preparationName);
+    auto *preparation = new WallpaperEngineCapture;
+    QPointer<WallpaperEngineCapture> preparationGuard(preparation);
+    preparation->m_requested = true;
+    preparation->m_windowName = preparationName;
+    preparation->m_renderSize = QSize(900, 600);
+    preparation->m_usingNativeCapture = true;
+    preparation->m_nativeWithoutOwner = true;
+    check(preparation->parkWindow(), "The preparation lifetime fixture must have its standalone renderer.");
+    int preparationCallbacks = 0;
+    preparation->onStatusChanged = [&](const QString &) {
+        checkPreparedTarget(preparationRenderer.window);
+        ++preparationCallbacks;
+        delete preparation;
+    };
+    check(preparation->retryNativeTargetBeforeOpacity() && preparationGuard.isNull() && preparationCallbacks == 1,
+          "A preparation status callback may destroy capture without reusing its deleted offscreen state afterward.");
+    events(20);
+    check(!IsWindow(preparationRenderer.window),
+          "Preparation-transition destruction must hide and close its renderer while cancelling the worker.");
+
+    NativeFixture foreign(QStringLiteral("UnrelatedProfileFixture_%1").arg(QCoreApplication::applicationPid()));
+    const QSize foreignSize = nativeSize(foreign.window);
+    const LONG_PTR foreignStyle = GetWindowLongPtrW(foreign.window, GWL_EXSTYLE);
+    const HWND foreignOwner = GetWindow(foreign.window, GW_OWNER);
+    WallpaperEngineCapture stale;
+    stale.m_requested = true;
+    stale.m_usingNativeCapture = true;
+    stale.m_windowName = rendererFixtureName();
+    stale.m_nativeWindow = reinterpret_cast<quintptr>(foreign.window);
+    const quint64 generation = stale.m_captureGeneration;
+    check(!stale.retryNativeTargetWithoutOwner() && !stale.m_nativeWithoutOwner
+              && stale.m_captureGeneration == generation,
+          "A stale HWND pointing at another title must never trigger a profile change or native restart.");
+    stale.setRenderSize(QSize(2100, 1200));
+    stale.stop();
+    events(20);
+    check(IsWindow(foreign.window) && IsWindowVisible(foreign.window) && nativeSize(foreign.window) == foreignSize
+              && GetWindowLongPtrW(foreign.window, GWL_EXSTYLE) == foreignStyle
+              && GetWindow(foreign.window, GW_OWNER) == foreignOwner,
+          "Profile rejection, resize and teardown must leave every unrelated window's ownership and appearance intact.");
+}
+
+void nativeTargetRejectionClassificationTest()
+{
+    NativeFixture verification(QStringLiteral("OwnedVerificationFixture_%1").arg(QCoreApplication::applicationPid()));
+    const quintptr verificationWindow = reinterpret_cast<quintptr>(verification.window);
+    NativeWindowCapture capture;
+    check(!capture.targetWindowRejected() && !capture.targetItemReady(),
+          "An unused native capture must not report an HWND rejection or a prepared item.");
+    capture.start(0, verificationWindow);
+    check(!capture.isActive() && !capture.errorString().isEmpty() && !capture.targetWindowRejected() && !capture.targetItemReady()
+              && capture.takeLatestFrame().isNull(),
+          "A missing handle is input validation failure, not the target-item rejection that authorizes another profile.");
+    NativeFixture closed(rendererFixtureName());
+    const quintptr closedWindow = reinterpret_cast<quintptr>(closed.window);
+    check(DestroyWindow(closed.window), "The test-owned closed target must be destroyable.");
+    capture.start(closedWindow, verificationWindow);
+    check(!capture.isActive() && !capture.errorString().isEmpty() && !capture.targetWindowRejected() && !capture.targetItemReady()
+              && capture.takeLatestFrame().isNull(),
+          "A closed target must not be misclassified as a retryable CreateForWindow rejection.");
+    check(IsWindow(verification.window) && IsWindowVisible(verification.window)
+              && GetWindow(verification.window, GW_OWNER) == nullptr,
+          "Failure classification must leave the supplied visible, test-owned verification window untouched.");
+}
+
 void nativeWorkerShutdownTest()
 {
     const QString name = rendererFixtureName();
@@ -1076,8 +1541,10 @@ void nativeWorkerShutdownTest()
     newOwner.start(window);
     check(!restarted.isActive() && !newOwner.isActive()
               && !restarted.errorString().isEmpty() && !newOwner.errorString().isEmpty()
+              && !restarted.targetWindowRejected() && !newOwner.targetWindowRejected()
+              && !restarted.targetItemReady() && !newOwner.targetItemReady()
               && restarted.takeLatestFrame().isNull() && newOwner.takeLatestFrame().isNull(),
-          "After irreversible exit shutdown, both reused and newly created owners must reject new workers.");
+          "Shutdown must reject reused/new owners as a setup failure, never classify it as target-item rejection.");
     check(NativeWindowCapture::shutdownWorkers(0),
           "A completed shutdown must remain immediately complete after rejected restart attempts.");
     qInfo("Native capture exit cleanup completed in %lld ms.", qlonglong(shutdownMs));
@@ -1087,6 +1554,7 @@ void liveEngineTest(const QString &executable, const QString &project)
 {
     NativeFixture independent(QStringLiteral("UnrelatedWallpaperLive_%1").arg(QCoreApplication::applicationPid()));
     WallpaperEngineCapture capture;
+    capture.setOwnerWindow(reinterpret_cast<quintptr>(independent.window));
     QSet<QByteArray> frames;
     QVector<QSize> deliveredSizes;
     int count = 0;
@@ -1098,6 +1566,12 @@ void liveEngineTest(const QString &executable, const QString &project)
     time.start();
     capture.onError = [&](const QString &message) {error = message;};
     capture.onFrame = [&](const QImage &image) {
+        if (capture.m_nativeCreateBeforeOpacity) {
+            const HWND target = reinterpret_cast<HWND>(capture.m_nativeWindow);
+            check(!capture.m_waitingForCaptureItem && fullyTransparent(target)
+                      && GetWindow(target, GW_OWNER) == nullptr,
+                  "Every final-profile frame must be published only after zero opacity and ownerless rendering are restored.");
+        }
         if (!count) first = image.size();
         deliveredSizes.append(image.size());
         const QImage small = image.scaled(80, 45).convertToFormat(QImage::Format_ARGB32);
@@ -1137,12 +1611,70 @@ void liveEngineTest(const QString &executable, const QString &project)
                  static_cast<long long>(time.elapsed()), error.toUtf8().constData());
     check(error.isEmpty() && count >= 20 && frames.size() >= 10
               && first == QSize(1920, 1080) && opaque && capture.m_usingNativeCapture
+              && !capture.m_nativeWithoutOwner
               && !capture.m_capture->isActive() && !capture.m_findTimer.isActive()
               && fullyTransparent(window) && IsWindowVisible(window),
           "Native fallback must retain opaque, full-resolution moving wallpaper while desktop opacity stays zero.");
+    check(capture.m_nativeCapture->diagnosticReport().contains(
+              QStringLiteral("Monitor selection: own-process destination-window hint.")),
+          "Live native capture must select its monitor through the supplied test-owned destination-window hint.");
+
+    count = 0;
+    frames.clear();
+    deliveredSizes.clear();
+    first = {};
+    opaque = false;
+    const quint64 ownedGeneration = capture.m_captureGeneration;
+    check(capture.retryNativeTargetWithoutOwner() && capture.m_nativeWithoutOwner
+              && capture.m_captureGeneration != ownedGeneration
+              && GetWindow(window, GW_OWNER) == nullptr && fullyTransparent(window),
+          "The live renderer must switch once to an ownerless native target without becoming visible on the desktop.");
+    const quint64 standaloneGeneration = capture.m_captureGeneration;
+    check(!capture.retryNativeTargetWithoutOwner() && capture.m_captureGeneration == standaloneGeneration,
+          "An already standalone live renderer must reject a second profile restart.");
+    check(until([&] { return (count >= 20 && frames.size() >= 10) || !error.isEmpty(); }),
+          "The ownerless native target must continue delivering distinct moving wallpaper frames.");
+    std::fprintf(stderr, "Standalone native capture: frames=%d distinct=%lld first=%dx%d opaque=%d elapsed_ms=%lld error=%s\n",
+                 count, static_cast<long long>(frames.size()), first.width(), first.height(), opaque,
+                 static_cast<long long>(time.elapsed()), error.toUtf8().constData());
+    check(error.isEmpty() && count >= 20 && frames.size() >= 10 && first == QSize(1920, 1080)
+              && opaque && capture.m_nativeWithoutOwner && capture.m_usingNativeCapture
+              && capture.m_captureGeneration == standaloneGeneration
+              && !capture.m_findTimer.isActive() && fullyTransparent(window)
+              && IsWindowVisible(window) && GetWindow(window, GW_OWNER) == nullptr,
+          "Standalone capture and its guard must preserve dynamic opaque frames, zero opacity and no owner without retry loops.");
+
+    count = 0;
+    frames.clear();
+    deliveredSizes.clear();
+    first = {};
+    opaque = false;
+    check(capture.retryNativeTargetBeforeOpacity() && capture.m_nativeCreateBeforeOpacity
+              && capture.m_waitingForCaptureItem,
+          "The live renderer must enter its final item-preparation profile once.");
+    checkPreparedTarget(window);
+    const quint64 preparationGeneration = capture.m_captureGeneration;
+    check(!capture.retryNativeTargetBeforeOpacity() && !capture.retryNativeTargetWithoutOwner()
+              && capture.m_captureGeneration == preparationGeneration,
+          "The final live profile must reject repeated retries without cycling capture generations.");
+    check(until([&] { return (count >= 20 && frames.size() >= 10) || !error.isEmpty(); }),
+          "Creating the native item before zero opacity must restore distinct dynamic wallpaper frames.");
+    std::fprintf(stderr, "Prepared-item native capture: frames=%d distinct=%lld first=%dx%d opaque=%d elapsed_ms=%lld error=%s\n",
+                 count, static_cast<long long>(frames.size()), first.width(), first.height(), opaque,
+                 static_cast<long long>(time.elapsed()), error.toUtf8().constData());
+    check(error.isEmpty() && count >= 20 && frames.size() >= 10 && first == QSize(1920, 1080)
+              && opaque && capture.m_usingNativeCapture && capture.m_nativeWithoutOwner
+              && capture.m_nativeCreateBeforeOpacity && !capture.m_waitingForCaptureItem
+              && capture.m_nativeCapture->targetItemReady()
+              && capture.m_captureGeneration == preparationGeneration
+              && fullyTransparent(window) && IsWindowVisible(window) && GetWindow(window, GW_OWNER) == nullptr,
+          "The final profile must return to zero-opacity moving capture after creating its item, without restarting again.");
 
     const QSize activeResize(2000, 1120);
     capture.setRenderSize(activeResize);
+    check(capture.m_nativeCreateBeforeOpacity && capture.m_waitingForCaptureItem,
+          "Resizing the final native profile must prepare a replacement item before restoring zero opacity.");
+    checkPreparedTarget(window);
     count = 0;
     frames.clear();
     deliveredSizes.clear();
@@ -1151,6 +1683,8 @@ void liveEngineTest(const QString &executable, const QString &project)
     check(until([&] { return count >= 10 || !error.isEmpty(); }),
           "Resizing native capture during playback must deliver frames from the replacement surface.");
     check(error.isEmpty() && count >= 10 && capture.m_usingNativeCapture && !capture.m_paused
+              && capture.m_nativeWithoutOwner && GetWindow(window, GW_OWNER) == nullptr
+              && capture.m_nativeCreateBeforeOpacity && !capture.m_waitingForCaptureItem
               && opaque && fullyTransparent(window) && nativeSize(window) == activeResize,
           "An active native resize must preserve playback, opacity and the requested renderer size.");
     for (const QSize &size : deliveredSizes)
@@ -1158,7 +1692,8 @@ void liveEngineTest(const QString &executable, const QString &project)
               "Every frame delivered after an active native resize must match its new size, with no stale old-surface frames.");
 
     capture.setPaused(true);
-    check(capture.m_usingNativeCapture && !IsWindowVisible(window),
+    check(capture.m_usingNativeCapture && capture.m_nativeWithoutOwner && !IsWindowVisible(window)
+              && fullyTransparent(window) && GetWindow(window, GW_OWNER) == nullptr,
           "Pausing native compatibility capture must genuinely hide the actual engine renderer.");
     const int pausedCount = count;
     events(350);
@@ -1168,14 +1703,21 @@ void liveEngineTest(const QString &executable, const QString &project)
     deliveredSizes.clear();
     opaque = false;
     capture.setPaused(false);
+    check(capture.m_nativeCreateBeforeOpacity && capture.m_waitingForCaptureItem,
+          "Resuming the final profile must prepare a fresh capture item offscreen.");
+    checkPreparedTarget(window);
     check(until([&] {return (count >= pausedCount + 30 && frames.size() >= 10 && resized) || !error.isEmpty();}),
           "Native compatibility capture must restore moving frames after hidden pause/resume and a high-DPI resize.");
     check(error.isEmpty() && capture.m_usingNativeCapture && opaque
+              && capture.m_nativeWithoutOwner && GetWindow(window, GW_OWNER) == nullptr
+              && capture.m_nativeCreateBeforeOpacity && !capture.m_waitingForCaptureItem
               && fullyTransparent(window) && nativeSize(window) == QSize(2048, 1152),
           "Resuming native fallback must keep the external renderer invisible with opaque frames at full resolution.");
     const QString name = capture.windowName();
     capture.stop();
-    check(!IsWindowVisible(window), "Stop must conceal the renderer immediately, before engine close completes.");
+    check(!capture.m_nativeWithoutOwner && !capture.m_nativeCreateBeforeOpacity
+              && !capture.m_waitingForCaptureItem && !IsWindowVisible(window),
+          "Stop must reset the one-shot target profile and conceal the renderer before engine close completes.");
     check(until([&] {return FindWindowW(nullptr, reinterpret_cast<LPCWSTR>(name.utf16())) == nullptr;}, 5000),
           "Only the unique engine popout must close on stop.");
     check(IsWindow(independent.window) && IsWindowVisible(independent.window),
@@ -1212,6 +1754,12 @@ int main(int argc, char **argv)
             captureRecoveryTest();
             captureRecoveryCancellationTest();
             nativeIsolationTest();
+            nativeWindowProfileTest();
+            nativePreparedWindowProfileTest();
+            nativePreparationResizeClampTest();
+            nativeAttemptHistoryTest();
+            nativeProfileLifetimeAndIsolationTest();
+            nativeTargetRejectionClassificationTest();
         }
         // Irreversibly disables new native workers, so this must remain last,
         // after both the isolated regressions and the optional live WE run.

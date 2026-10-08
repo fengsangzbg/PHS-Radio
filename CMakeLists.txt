@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(PHSRadio VERSION 0.2.4 LANGUAGES CXX)
 
-set(PHSRADIO_PRERELEASE "beta.1" CACHE STRING "Prerelease suffix; empty for a stable build")
+set(PHSRADIO_PRERELEASE "beta.2" CACHE STRING "Prerelease suffix; empty for a stable build")
 set(PHSRADIO_VERSION_STRING "${PROJECT_VERSION}")
 set(PHSRADIO_VERSION_FLAGS "0")
 if(PHSRADIO_PRERELEASE)
@@ -78,7 +78,7 @@ add_library(AeroWidgets STATIC
     resources/platforms.qrc resources/app.qrc)
 target_link_libraries(AeroWidgets PUBLIC Qt6::Widgets Qt6::Multimedia PRIVATE VideoFrameImages)
 if(WIN32)
-    target_link_libraries(AeroWidgets PRIVATE user32 d3d11 dxgi runtimeobject ole32)
+    target_link_libraries(AeroWidgets PRIVATE user32 d3d11 dxgi dwmapi runtimeobject ole32)
 endif()
 
 add_library(UpdateWidgets STATIC update_panel.h update_panel.cpp)
