@@ -40,7 +40,7 @@ PlatformLoginPage::PlatformLoginPage(QWidget *parent)
     auto *description = new QLabel(
         ReleaseConfig::KugouOnly
             ? QStringLiteral("使用酷狗 App 扫码，连接你的歌单、收藏音乐和每日推荐。")
-            : QStringLiteral("酷狗扫码连接歌单和每日推荐；网易云扫码连接每日推荐。QQ 音乐暂时显示演示歌单。"), this);
+            : QStringLiteral("酷狗与网易云可以同时登录，连接各自的歌单、收藏音乐和每日推荐。"), this);
     description->setWordWrap(true);
     description->setStyleSheet(QStringLiteral("font-size: 14px; color: #96a4b4;"));
     layout->addWidget(title);
@@ -178,7 +178,7 @@ void PlatformLoginPage::setNeteaseQr(const QImage &image)
 {
     if (!ReleaseConfig::platformAvailable(MusicPlatform::NetEaseCloud)) return;
     m_qrPlatform = MusicPlatform::NetEaseCloud;
-    m_qrHint->setText(QStringLiteral("使用网易云音乐 App 扫码\n\n确认登录后会读取你的每日推荐。"));
+    m_qrHint->setText(QStringLiteral("使用网易云音乐 App 扫码\n\n确认登录后会读取你的创建、收藏歌单和每日推荐。"));
     m_kugouQrLabel->setPixmap(QPixmap::fromImage(image).scaled(
         m_kugouQrLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
     m_kugouQrPanel->show();

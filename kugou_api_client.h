@@ -1,6 +1,7 @@
 #pragma once
 
 #include "music_domain.h"
+#include "music_quality.h"
 
 #include <QImage>
 #include <QJsonObject>
@@ -31,6 +32,9 @@ public:
     void fetchLyrics(const Track &track, LyricsCallback callback);
     using AudioCallback = std::function<void(const QUrl &, const QString &)>;
     void fetchAudioUrl(const Track &track, AudioCallback callback);
+    void fetchAudioUrl(const Track &track, AudioQuality quality, AudioCallback callback);
+    void setAudioQuality(AudioQuality quality) { m_audioQuality = quality; }
+    AudioQuality audioQuality() const { return m_audioQuality; }
     void fetchTrackCover(const Track &track, std::function<void(const QUrl &)> callback);
     void fetchPlaylistCover(const Playlist &playlist, std::function<void(const QUrl &)> callback);
     QVector<Playlist> playlists() const;
@@ -62,6 +66,7 @@ private:
     void reportStatus(const QString &status) const;
     void reportError(const QString &error) const;
 
+    AudioQuality m_audioQuality = AudioQuality::Standard;
     QNetworkAccessManager m_network;
     QNetworkAccessManager m_playbackNetwork;
     QNetworkAccessManager m_libraryNetwork;

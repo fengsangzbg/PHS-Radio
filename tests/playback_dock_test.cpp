@@ -376,6 +376,21 @@ int main(int argc, char **argv)
     QCoreApplication::processEvents();
     verifyPointerAndFocus(host, dock, outside);
     verifyPinResizeAndAnimation(host, dock);
+    AudioQuality selected = AudioQuality::Standard;
+    dock.setAudioQuality(AudioQuality::High, QStringLiteral("网易云音乐"));
+    dock.onAudioQualityChanged = [&](AudioQuality quality) { selected = quality; };
+    QTimer::singleShot(50, [&] {
+        auto *menu = dock.findChild<QMenu *>(QStringLiteral("playbackQualityMenu"));
+        check(menu && menu->actions().size() == 3 && menu->actions()[1]->isChecked(),
+              "The quality menu must show the selected quality and all three options.");
+        menu->setActiveAction(menu->actions()[2]);
+        QKeyEvent key(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QApplication::sendEvent(menu, &key);
+    });
+    dock.m_quality->click();
+    check(selected == AudioQuality::Lossless, "Selecting a quality must notify the player.");
+    check(!dock.m_qualityMenuActive, "Closing the quality menu must release auto-hide protection.");
+    dock.onAudioQualityChanged = {};
     verifySeeking(dock);
     verifyVolume(host, dock);
     verifyButtons(dock);

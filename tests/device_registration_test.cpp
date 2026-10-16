@@ -146,6 +146,7 @@ void sharedIdentityAndPersistenceTest()
 {
     clearFixtureSettings();
     MockService firstBridge;
+    QJsonValue expectedQuality = 128;
     firstBridge.handle = [&](const Request &call, QPointer<QTcpSocket> socket) {
         if (call.path == QStringLiteral("/fixture/identity")) {
             QList<QByteArray> cookies = identityCookies;
@@ -166,6 +167,7 @@ void sharedIdentityAndPersistenceTest()
             MockService::respond(socket, {{QStringLiteral("status"), 1},
                 {QStringLiteral("data"), QJsonObject{{QStringLiteral("dfid"), QStringLiteral("registered-fixture-device")}}}});
         } else if (call.path == QStringLiteral("/song/url")) {
+            check(call.body.value(QStringLiteral("quality")) == expectedQuality, "Kugou quality must reach its audio endpoint unchanged.");
             check(hasIdentity(call) && call.header("Authorization").contains("dfid=registered-fixture-device"),
                   "Audio resolution must retain the shared identity and the actually registered dfid.");
             MockService::respond(socket, {{QStringLiteral("status"), 1}, {QStringLiteral("data"),
@@ -199,6 +201,15 @@ void sharedIdentityAndPersistenceTest()
             audioReady = true;
         });
         check(until([&] { return audioReady; }), "Fake audio resolution timed out.");
+        for (AudioQuality quality : {AudioQuality::High, AudioQuality::Lossless}) {
+            expectedQuality = quality == AudioQuality::Lossless ? QJsonValue(QStringLiteral("flac")) : QJsonValue(320);
+            client->setAudioQuality(quality);
+            audioReady = false;
+            client->fetchAudioUrl(track, [&](const QUrl &url, const QString &error) {
+                check(error.isEmpty() && !url.isEmpty(), "Selected Kugou quality must resolve."); audioReady = true;
+            });
+            check(until([&] { return audioReady; }), "Quality selection timed out.");
+        }
         client.reset();
     }
     check(jar.isNull(), "Destroying the client must delete its shared cookie jar exactly once.");

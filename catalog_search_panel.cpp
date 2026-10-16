@@ -265,6 +265,8 @@ void CatalogSearchPanel::setResults(const QString &query, const QVector<CatalogT
         platform->setData(Qt::UserRole, static_cast<int>(result.platform));
         if (result.platform == MusicPlatform::Kugou)
             platform->setIcon(QIcon(QStringLiteral(":/platforms/kugou.ico")));
+        else if (result.platform == MusicPlatform::NetEaseCloud)
+            platform->setIcon(QIcon(QStringLiteral(":/platforms/netease.ico")));
         m_table->setItem(row, 3, platform);
     }
     m_table->verticalScrollBar()->setValue(oldScroll);

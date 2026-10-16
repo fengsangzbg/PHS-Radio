@@ -12,14 +12,22 @@ static constexpr bool KugouOnly = true;
 static constexpr bool KugouOnly = false;
 #endif
 
+#if defined(PHSRADIO_KUGOU_NETEASE) && PHSRADIO_KUGOU_NETEASE
+static constexpr bool DualPlatformRelease = true;
+#else
+static constexpr bool DualPlatformRelease = false;
+#endif
+
 static constexpr bool platformAvailable(MusicPlatform platform)
 {
-    return !KugouOnly || platform == MusicPlatform::Kugou;
+    return KugouOnly ? platform == MusicPlatform::Kugou
+        : !DualPlatformRelease || platform == MusicPlatform::Kugou || platform == MusicPlatform::NetEaseCloud;
 }
 
 static inline QVector<MusicPlatform> availablePlatforms()
 {
     if (KugouOnly) return {MusicPlatform::Kugou};
+    if (DualPlatformRelease) return {MusicPlatform::Kugou, MusicPlatform::NetEaseCloud};
     return {MusicPlatform::QQMusic, MusicPlatform::NetEaseCloud, MusicPlatform::Kugou};
 }
 

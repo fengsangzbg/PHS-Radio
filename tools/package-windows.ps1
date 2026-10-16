@@ -13,7 +13,7 @@ param(
     [ValidateSet('Release', 'RelWithDebInfo', 'MinSizeRel')]
     [string] $Configuration = 'Release',
     [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta(?:\.[1-9][0-9]*)?)?$')]
-    [string] $Version = '0.2.4-beta.2',
+    [string] $Version = '0.3.0',
     [switch] $ValidateOnly
 )
 
@@ -126,9 +126,10 @@ if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
         $ucrtRoot = [IO.Path]::GetFullPath((Join-Path $qtDirectory '..\..\..'))
     }
 }
-if ((Get-CMakeValue 'PHSRADIO_KUGOU_ONLY') -notin @('ON', 'TRUE', '1')) {
-    throw 'This public package requires a build configured with -DPHSRADIO_KUGOU_ONLY=ON. Other platforms are not published.'
-}
+$platformFlag = Get-CMakeValue 'PHSRADIO_KUGOU_ONLY'
+if ($platformFlag -notin @('ON','TRUE','1','OFF','FALSE','0')) { throw 'Platform configuration must be explicit in the selected build.' }
+$kugouOnly = $platformFlag -in @('ON','TRUE','1')
+$platformDescription = if ($kugouOnly) { 'Kugou' } else { 'Kugou + NetEase' }
 $ucrtBin = Join-Path $ucrtRoot 'bin'
 $deployTool = Join-Path $ucrtBin 'windeployqt6.exe'
 if (-not (Test-Path -LiteralPath $deployTool -PathType Leaf)) {
@@ -209,10 +210,36 @@ foreach ($entry in $lock.packages.PSObject.Properties) {
     Assert-NoReparsePoint $source
     $productionPackages += [PSCustomObject]@{ Source = $source; Relative = ($entry.Name -replace '/', '\') }
 }
+$neteasePackages = @()
+if (-not $kugouOnly) {
+    $neteaseSource = Join-Path $workspaceRoot 'services/netease'
+$neteaseLockText = Get-Content -LiteralPath (Join-Path $neteaseSource 'package-lock.json') -Encoding UTF8 -Raw
+$neteaseLockText = $neteaseLockText -replace '(?m)^(\s*)""(\s*:)', '$1"__phs_root_package__"$2'
+$neteaseLock = $neteaseLockText | ConvertFrom-Json
+if (-not $neteaseLock.PSObject.Properties['packages']) {
+    throw 'The service lockfile must contain the npm v2/v3 packages table.'
+}
+$neteasePackages = @()
+foreach ($neteaseEntry in $neteaseLock.packages.PSObject.Properties) {
+    if ($neteaseEntry.Name -eq '__phs_root_package__') { continue }
+    if ($neteaseEntry.Name -notmatch '^node_modules/(?:[^/]+/)*[^/]+$' -or ($neteaseEntry.Name -split '/') -contains '..') {
+        throw "Unexpected npm package path in lockfile: $($neteaseEntry.Name)"
+    }
+    if ($neteaseEntry.Value.PSObject.Properties['dev'] -and $neteaseEntry.Value.dev) { continue }
+    $neteaseDependency = Join-Path $neteaseSource ($neteaseEntry.Name -replace '/', '\')
+    Assert-UnderPath $neteaseDependency $neteaseSource
+    if (-not (Test-Path -LiteralPath $neteaseDependency -PathType Container)) {
+        if ($neteaseEntry.Value.PSObject.Properties['optional'] -and $neteaseEntry.Value.optional) { continue }
+        throw "Locked production dependency is missing. Install service dependencies first: $neteaseDependency"
+    }
+    Assert-NoReparsePoint $neteaseDependency
+    $neteasePackages += [PSCustomObject]@{ Source = $neteaseDependency; Relative = ($neteaseEntry.Name -replace '/', '\') }
+}
+}
 if ($ValidateOnly) {
     Write-Host 'Packaging inputs validated; no files were copied and the player was not launched.'
     Write-Output ([PSCustomObject]@{ Version = $Version; Executable = $exeSource;
-        FileVersion = $exeVersion.FileVersion; Platform = 'Kugou';
+        FileVersion = $exeVersion.FileVersion; Platform = $platformDescription;
         QtTools = $ucrtBin; ProductionPackages = $productionPackages.Count; Destination = $packageRoot })
     return
 }
@@ -244,7 +271,17 @@ foreach ($entry in $productionPackages) {
         -SkipNestedNodeModules -ProductionPackage
     ++$packageCount
 }
-# .bin and node_modules/.package-lock.json are unnecessary for require('kugoumusicapi').
+# .bin and node_modules/.package-lock.json are unnecessary for service imports.
+if (-not $kugouOnly) {
+    $neteaseDestination = Join-Path $packageRoot 'services/netease'
+    foreach ($name in @('server.js','package.json','package-lock.json')) {
+        Copy-ExactFile (Join-Path $neteaseSource $name) (Join-Path $neteaseDestination $name)
+    }
+    foreach ($entry in $neteasePackages) {
+        Copy-ExactTree $entry.Source (Join-Path $neteaseDestination $entry.Relative) -SkipNestedNodeModules -ProductionPackage
+        ++$packageCount
+    }
+}
 
 $systemRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
 function Test-SystemImport([string] $Name) {
@@ -267,7 +304,7 @@ function Test-SystemImport([string] $Name) {
 $pending = New-Object 'System.Collections.Generic.Queue[object]'
 $inspected = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $runtimePrefix = $runtimeRoot.TrimEnd('\') + '\'
-$servicePrefix = $serviceDestination.TrimEnd('\') + '\'
+$servicePrefix = (Join-Path $packageRoot 'services').TrimEnd('\') + '\'
 foreach ($binary in Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Force) {
     if ($binary.Attributes -band [IO.FileAttributes]::ReparsePoint) {
         throw "A deployment tool created an unsupported link: $($binary.FullName)"
@@ -365,7 +402,7 @@ if (Test-Path -LiteralPath $ffmpegTool -PathType Leaf) {
 
 $manifest = @(
     "PHS Radio $Version - portable Windows x64",
-    "Build configuration: $Configuration (Kugou only)",
+    "Build configuration: $Configuration ($platformDescription)",
     "Executable file version: $($exeVersion.FileVersion)",
     "Executable SHA-256: $((Get-FileHash -LiteralPath $packageExe -Algorithm SHA256).Hash)",
     'Updater installer: embedded resource :/updater/update-install.ps1 (no separately downloaded helper).',
@@ -384,7 +421,7 @@ foreach ($entry in Get-ChildItem -LiteralPath $packageRoot -Force -Recurse) {
         throw "Private runtime state appeared in the package: $($entry.FullName)"
     }
 }
-if (Test-Path -LiteralPath (Join-Path $packageRoot 'services\netease')) {
+if ($kugouOnly -and (Test-Path -LiteralPath (Join-Path $packageRoot 'services\netease'))) {
     throw 'A Kugou-only public package must not contain the NetEase service.'
 }
 Write-Host "Portable package ready: $packageRoot"

@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QIcon>
 #include <QMouseEvent>
+#include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPropertyAnimation>
@@ -150,6 +151,7 @@ PlaybackDock::PlaybackDock(QWidget *host)
       m_transportRight(new QWidget(this)),
       m_playPause(new JellyButton({}, this)), m_previous(new JellyButton({}, this)),
       m_next(new JellyButton({}, this)), m_mode(new JellyButton({}, this)),
+      m_quality(new JellyButton({}, this)),
       m_pin(new JellyButton({}, this)), m_palette(new JellyButton({}, this)),
       m_songPage(new JellyButton(QStringLiteral("唱片"), this)),
       m_lyrics(new JellyButton(QStringLiteral("歌词"), this)),
@@ -193,6 +195,10 @@ PlaybackDock::PlaybackDock(QWidget *host)
     m_pin->setGlyph(JellyButton::Glyph::Pin);
     m_pin->setCheckable(true);
     m_pin->setFixedSize(94, 40);
+    m_quality->setObjectName(QStringLiteral("playbackQualityButton"));
+    m_quality->setFixedSize(120, 40);
+    setAudioQuality(AudioQuality::Standard, QStringLiteral("酷狗音乐"));
+    top->addWidget(m_quality);
     top->addWidget(m_mode);
     top->addWidget(m_palette);
     top->addWidget(m_pin);
@@ -284,6 +290,28 @@ PlaybackDock::PlaybackDock(QWidget *host)
             triggerPlaybackMeteor();
         if (onPlayPause)
             onPlayPause();
+    });
+    connect(m_quality, &QPushButton::clicked, this, [this] {
+        m_qualityMenuActive = true;
+        m_leaveTimer->stop();
+        QMenu menu(this);
+        menu.setObjectName(QStringLiteral("playbackQualityMenu"));
+        menu.setStyleSheet(QStringLiteral(
+            "QMenu { background: rgba(18,38,49,240); color: #edf7ff; border: 1px solid rgba(160,220,240,100); padding: 8px; border-radius: 12px; }"
+            "QMenu::item { padding: 9px 22px; border-radius: 7px; }"
+            "QMenu::item:selected { background: rgba(85,175,205,95); }"));
+        for (AudioQuality quality : {AudioQuality::Standard, AudioQuality::High, AudioQuality::Lossless}) {
+            auto *action = menu.addAction(audioQualityName(quality));
+            action->setData(int(quality));
+            action->setCheckable(true);
+            action->setChecked(quality == m_audioQuality);
+        }
+        const auto chosen = menu.exec(m_quality->mapToGlobal(QPoint(0, -menu.sizeHint().height() - 6)));
+        m_qualityMenuActive = false;
+        if (chosen) {
+            const AudioQuality quality = audioQualityFromSetting(chosen->data().toInt());
+            if (quality != m_audioQuality && onAudioQualityChanged) onAudioQualityChanged(quality);
+        }
     });
     connect(m_previous, &QPushButton::clicked, this, [this] { if (onPrevious) onPrevious(); });
     connect(m_next, &QPushButton::clicked, this, [this] { if (onNext) onNext(); });
@@ -563,7 +591,7 @@ void PlaybackDock::setAccentColor(const QColor &color)
     if (!color.isValid())
         return;
     m_accent = color;
-    for (JellyButton *button : {m_playPause, m_previous, m_next, m_mode, m_pin, m_palette, m_songPage, m_lyrics, m_mute})
+    for (JellyButton *button : {m_playPause, m_previous, m_next, m_mode, m_pin, m_palette, m_songPage, m_lyrics, m_mute, m_quality})
         button->setAccentColor(color);
     m_progress->setStyleSheet(QStringLiteral(
         "QSlider { background: transparent; }"
@@ -577,6 +605,15 @@ void PlaybackDock::setAccentColor(const QColor &color)
         .arg(color.lighter(120).name(), color.darker(130).name()));
     m_volumeSlider->setStyleSheet(m_progress->styleSheet());
     update();
+}
+
+void PlaybackDock::setAudioQuality(AudioQuality quality, const QString &platform)
+{
+    m_audioQuality = quality;
+    m_quality->setText(QStringLiteral("音质 · %1").arg(audioQualityName(quality)));
+    m_quality->setAccessibleName(platform + QStringLiteral("音质选择"));
+    m_quality->setToolTip(QStringLiteral("%1优先音质：%2。实际音质以平台返回为准；高音质可能需要会员。")
+        .arg(platform, audioQualityName(quality)));
 }
 
 void PlaybackDock::setShuffle(bool shuffle)
@@ -643,11 +680,11 @@ QRect PlaybackDock::hiddenPanelRect() const
 
 bool PlaybackDock::hasInteraction() const
 {
-    if (m_interactionHeld || m_colorRequestActive || m_meteor->isRunning() || m_dragging || m_progress->isSliderDown()
+    if (m_interactionHeld || m_colorRequestActive || m_qualityMenuActive || m_meteor->isRunning() || m_dragging || m_progress->isSliderDown()
         || m_volumeSlider->isSliderDown()
         || m_keyboardTimer->isActive() || QApplication::activePopupWidget())
         return true;
-    for (const JellyButton *button : {m_playPause, m_previous, m_next, m_mode, m_pin, m_palette, m_mute, m_songPage, m_lyrics})
+    for (const JellyButton *button : {m_playPause, m_previous, m_next, m_mode, m_pin, m_palette, m_mute, m_songPage, m_lyrics, m_quality})
         if (button->isDown())
             return true;
     return false;

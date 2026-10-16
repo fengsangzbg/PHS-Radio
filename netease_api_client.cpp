@@ -62,6 +62,10 @@ QVector<Track> parseNeteaseTracks(const QJsonArray &songs)
         track.artist = names.join(QStringLiteral(" / "));
         for (const auto &alias : song.value(QStringLiteral("alia")).toArray())
             if (alias.isString() && !alias.toString().trimmed().isEmpty()) track.searchAliases.append(alias.toString());
+        for (const auto &key : {QStringLiteral("alias"), QStringLiteral("tns")})
+            for (const auto &alias : song.value(key).toArray())
+                if (alias.isString() && !alias.toString().trimmed().isEmpty()
+                    && !track.searchAliases.contains(alias.toString())) track.searchAliases.append(alias.toString());
         tracks.append(track);
     }
     return tracks;
@@ -72,7 +76,15 @@ QString neteaseError(const QJsonObject &response, const QString &transport)
     const int code = response.value(QStringLiteral("code")).toInt();
     if (code == 301 || code == 302 || code == 401)
         return QStringLiteral("网易云登录已失效，请重新扫码登录（%1）。").arg(code);
-    if (!transport.isEmpty()) return QStringLiteral("网易云请求失败：%1").arg(transport);
+    if (!transport.isEmpty()) {
+        const QString reason = response.value(QStringLiteral("reason")).toString();
+        if (reason == QStringLiteral("upstream_unavailable"))
+            return QStringLiteral("网易云播放服务暂时不可用，请稍后重试（%1）。").arg(code);
+        if (reason == QStringLiteral("playback_protocol_unavailable"))
+            return QStringLiteral("网易云播放协议初始化失败，请退出旧版播放器后重启当前版本。");
+        return code ? QStringLiteral("网易云请求失败（错误码 %1），请稍后重试。").arg(code)
+                    : QStringLiteral("无法连接本机网易云服务，请重启播放器后重试。");
+    }
     if (code == 200) return {};
     return QStringLiteral("网易云拒绝了请求（错误码 %1）。").arg(code);
 }
@@ -138,6 +150,8 @@ void NeteaseApiClient::reportError(const QString &error) const { if (onError) on
 void NeteaseApiClient::logout()
 {
     ++m_generation;
+    ++m_libraryRevision;
+    m_playlists.clear(); m_loadedPlaylists.clear();
     m_qrTimer.stop();
     m_loginInProgress = false;
     m_pollPending = false;
@@ -149,6 +163,8 @@ void NeteaseApiClient::logout()
 void NeteaseApiClient::startQrLogin()
 {
     const int generation = ++m_generation;
+    ++m_libraryRevision;
+    m_playlists.clear(); m_loadedPlaylists.clear();
     m_qrTimer.stop();
     m_cookie.clear(); m_userId.clear(); m_qrKey.clear();
     m_loginInProgress = true; m_pollPending = false;
@@ -183,6 +199,9 @@ void NeteaseApiClient::ensureService(std::function<void(const QString &)> callba
         if (!keepAlive) return;
         requestJson(QStringLiteral("/health"), {}, {}, [this, callback, keepAlive, number](const QJsonObject &body, const QString &error) {
             if (error.isEmpty() && body.value(QStringLiteral("service")).toString() == QStringLiteral("phs-radio-netease")) {
+                if (body.value(QStringLiteral("protocol")).toInt() < 3) {
+                    callback(QStringLiteral("本机网易云服务是旧版本，请先退出旧播放器，再重新打开当前版本。")); return;
+                }
                 callback({}); return;
             }
             if (number == 0) startLocalService();
@@ -323,7 +342,8 @@ void NeteaseApiClient::validateSession(int generation, bool persist)
             QSettings().setValue(QStringLiteral("accounts/netease/session"), encrypted);
         }
         setLoggedIn(true);
-        reportStatus(QStringLiteral("网易云音乐已登录，正在读取每日推荐…"));
+        reportStatus(QStringLiteral("网易云音乐已登录，正在读取歌单与每日推荐…"));
+        loadPlaylists();
     });
 }
 
@@ -365,10 +385,15 @@ void NeteaseApiClient::fetchLyrics(const Track &track, LyricsCallback callback)
 
 void NeteaseApiClient::fetchAudioUrl(const Track &track, AudioCallback callback)
 {
-    if (!m_loggedIn || m_cookie.isEmpty()) { callback({}, QStringLiteral("请先登录网易云音乐再播放推荐歌曲。")); return; }
+    fetchAudioUrl(track, m_audioQuality, std::move(callback));
+}
+
+void NeteaseApiClient::fetchAudioUrl(const Track &track, AudioQuality quality, AudioCallback callback)
+{
+    if (!m_loggedIn || m_cookie.isEmpty()) { callback({}, QStringLiteral("请先登录网易云音乐再播放歌曲。")); return; }
     if (track.id.isEmpty()) { callback({}, QStringLiteral("网易云歌曲缺少播放 ID。")); return; }
     const int generation = m_generation;
-    requestJson(QStringLiteral("/song/url/v1"), {{QStringLiteral("id"), track.id}}, m_cookie,
+    requestJson(QStringLiteral("/song/url/v1"), {{QStringLiteral("id"), track.id}, {QStringLiteral("level"), neteaseQualityLevel(quality)}}, m_cookie,
                 [this, generation, requestedId = track.id, callback = std::move(callback)](const QJsonObject &body, const QString &transport) {
         if (generation != m_generation) { callback({}, QStringLiteral("网易云账号已切换，请重新播放。")); return; }
         const QString error = neteaseError(body, transport);
@@ -392,5 +417,207 @@ void NeteaseApiClient::fetchAudioUrl(const Track &track, AudioCallback callback)
             callback({}, QStringLiteral("网易云未提供授权音源，可能需要会员、购买或当前地区没有版权。")); return;
         }
         callback(url, {});
+    });
+}
+
+void NeteaseApiClient::loadPlaylists()
+{
+    if (!m_loggedIn || m_userId.isEmpty()) return;
+    m_loadedPlaylists.clear();
+    const int revision = ++m_libraryRevision;
+    reportStatus(QStringLiteral("正在读取网易云账号全部歌单…"));
+    requestPlaylistPage(m_generation, revision, 0, {});
+}
+
+void NeteaseApiClient::requestPlaylistPage(int generation, int revision, int offset,
+                                          QVector<Playlist> playlists)
+{
+    requestJson(QStringLiteral("/user/playlist"),
+        {{QStringLiteral("uid"), m_userId}, {QStringLiteral("limit"), 100}, {QStringLiteral("offset"), offset}},
+        m_cookie, [this, generation, revision, offset, playlists = std::move(playlists)]
+        (const QJsonObject &body, const QString &transport) mutable {
+        if (generation != m_generation || revision != m_libraryRevision) return;
+        QString error = neteaseError(body, transport);
+        const auto rows = body.value(QStringLiteral("playlist"));
+        if (error.isEmpty() && !rows.isArray())
+            error = QStringLiteral("网易云没有返回有效的歌单列表。");
+        if (!error.isEmpty()) {
+            if (!playlists.isEmpty()) {
+                m_playlists = std::move(playlists);
+                if (onPlaylistsReady) onPlaylistsReady(m_playlists);
+            }
+            reportError(error); return;
+        }
+        QSet<QString> known;
+        for (const Playlist &playlist : playlists) known.insert(playlist.id);
+        const int before = playlists.size();
+        for (const auto &value : rows.toArray()) {
+            const auto row = value.toObject();
+            const QString id = neString(row, {QStringLiteral("id")});
+            if (id.isEmpty() || id == QStringLiteral("0")) continue;
+            Playlist playlist;
+            playlist.id = QStringLiteral("netease:") + id;
+            if (known.contains(playlist.id)) continue;
+            known.insert(playlist.id);
+            playlist.externalId = id;
+            playlist.originalId = id;
+            playlist.name = neString(row, {QStringLiteral("name")});
+            playlist.coverUrl = QUrl(neString(row, {QStringLiteral("coverImgUrl")}));
+            QString creator = neString(row.value(QStringLiteral("creator")).toObject(), {QStringLiteral("userId")});
+            if (creator.isEmpty()) creator = neString(row, {QStringLiteral("userId")});
+            playlist.kind = creator == m_userId ? PlaylistKind::Created : PlaylistKind::Favorite;
+            playlist.isLiked = row.value(QStringLiteral("specialType")).toInt() == 5;
+            playlist.expectedTrackCount = row.value(QStringLiteral("trackCount")).toInt(-1);
+            playlists.append(std::move(playlist));
+        }
+        const bool more = body.value(QStringLiteral("more")).toBool(rows.toArray().size() >= 100);
+        if (more && playlists.size() > before && offset < 100000) {
+            requestPlaylistPage(generation, revision, offset + rows.toArray().size(), std::move(playlists));
+            return;
+        }
+        // Reuse account-local tracks on refresh; never reuse them across logins.
+        QHash<QString, QVector<Track>> previous;
+        for (const auto &playlist : m_playlists) previous.insert(playlist.id, playlist.tracks);
+        for (auto &playlist : playlists) {
+            playlist.tracks = previous.value(playlist.id);
+            if (playlist.expectedTrackCount != playlist.tracks.size()) m_loadedPlaylists.remove(playlist.id);
+        }
+        m_playlists = std::move(playlists);
+        if (onPlaylistsReady) onPlaylistsReady(m_playlists);
+        if (more)
+            reportError(QStringLiteral("网易云歌单分页未前进，已保留 %1 个歌单，请重试读取歌单。").arg(m_playlists.size()));
+        else
+            reportStatus(QStringLiteral("已读取网易云 %1 个歌单，正在加载全部歌曲。").arg(m_playlists.size()));
+    });
+}
+
+struct NeteaseApiClient::TrackFetchState {
+    int generation = 0;
+    int revision = 0;
+    QString playlistId;
+    QVector<QString> ids;
+    QHash<QString, Track> tracks;
+    int offset = 0;
+    TracksCallback callback;
+};
+
+void NeteaseApiClient::fetchPlaylistTracks(const Playlist &playlist, TracksCallback callback)
+{
+    if (!m_loggedIn || m_cookie.isEmpty()) { callback({}, QStringLiteral("请先登录网易云音乐读取歌单。")); return; }
+    if (m_loadedPlaylists.contains(playlist.id)) {
+        for (const auto &entry : m_playlists)
+            if (entry.id == playlist.id) { callback(entry.tracks, {}); return; }
+    }
+    const QString id = playlist.externalId.isEmpty() ? playlist.originalId : playlist.externalId;
+    if (id.isEmpty()) { callback({}, QStringLiteral("网易云歌单缺少 ID。")); return; }
+    auto state = std::make_shared<TrackFetchState>();
+    state->generation = m_generation;
+    state->revision = m_libraryRevision;
+    state->playlistId = playlist.id;
+    state->callback = std::move(callback);
+    requestJson(QStringLiteral("/playlist/detail"), {{QStringLiteral("id"), id}}, m_cookie,
+        [this, state](const QJsonObject &body, const QString &transport) {
+        if (state->generation != m_generation || state->revision != m_libraryRevision) {
+            state->callback({}, QStringLiteral("网易云账号或歌单已更新，本次加载已取消。")); return;
+        }
+        QString error = neteaseError(body, transport);
+        const auto detail = body.value(QStringLiteral("playlist")).toObject();
+        const auto ids = detail.value(QStringLiteral("trackIds"));
+        if (error.isEmpty() && !ids.isArray()) error = QStringLiteral("网易云未返回完整歌曲 ID 列表，请重试。");
+        if (!error.isEmpty()) { state->callback({}, error); return; }
+        QSet<QString> seen;
+        for (const auto &value : ids.toArray()) {
+            const QString id = neString(value.toObject(), {QStringLiteral("id")});
+            if (!id.isEmpty() && id != QStringLiteral("0") && !seen.contains(id)) {
+                seen.insert(id); state->ids.append(id);
+            }
+        }
+        const int expected = detail.value(QStringLiteral("trackCount")).toInt(state->ids.size());
+        if (expected > state->ids.size()) {
+            // Preserve the returned IDs while explicitly reporting truncation.
+            for (const auto &track : parseNeteaseTracks(detail.value(QStringLiteral("tracks")).toArray()))
+                state->tracks.insert(track.id, track);
+            finishTrackFetch(state, QStringLiteral("网易云只返回了 %1 / %2 首歌曲的 ID，请重试。")
+                .arg(state->ids.size()).arg(expected));
+            return;
+        }
+        requestTrackBatch(state);
+    });
+}
+
+void NeteaseApiClient::requestTrackBatch(const std::shared_ptr<TrackFetchState> &state)
+{
+    if (state->generation != m_generation || state->revision != m_libraryRevision) {
+        state->callback({}, QStringLiteral("网易云账号或歌单已更新，本次加载已取消。")); return;
+    }
+    if (state->offset >= state->ids.size()) { finishTrackFetch(state, {}); return; }
+    QStringList batch;
+    const int end = qMin(state->offset + 100, int(state->ids.size()));
+    for (int index = state->offset; index < end; ++index) batch.append(state->ids.at(index));
+    requestJson(QStringLiteral("/song/detail"), {{QStringLiteral("ids"), batch.join(QLatin1Char(','))}}, m_cookie,
+        [this, state, end](const QJsonObject &body, const QString &transport) {
+        if (state->generation != m_generation || state->revision != m_libraryRevision) {
+            state->callback({}, QStringLiteral("网易云账号或歌单已更新，本次加载已取消。")); return;
+        }
+        QString error = neteaseError(body, transport);
+        if (error.isEmpty() && !body.value(QStringLiteral("songs")).isArray())
+            error = QStringLiteral("网易云没有返回有效的歌曲信息。");
+        if (!error.isEmpty()) { finishTrackFetch(state, error); return; }
+        for (const auto &track : parseNeteaseTracks(body.value(QStringLiteral("songs")).toArray()))
+            state->tracks.insert(track.id, track);
+        state->offset = end;
+        requestTrackBatch(state);
+    });
+}
+
+void NeteaseApiClient::finishTrackFetch(const std::shared_ptr<TrackFetchState> &state, const QString &error)
+{
+    QVector<Track> tracks;
+    tracks.reserve(state->ids.size());
+    int unavailable = 0;
+    for (const auto &id : state->ids) {
+        auto track = state->tracks.value(id);
+        if (track.id.isEmpty()) {
+            track.id = id;
+            track.title = QStringLiteral("歌曲信息暂不可用（ID %1）").arg(id);
+            ++unavailable;
+        }
+        tracks.append(std::move(track));
+    }
+    QString detail = error;
+    if (detail.isEmpty() && unavailable)
+        detail = QStringLiteral("有 %1 首歌曲暂未返回信息，已保留歌曲位置，可重试加载。").arg(unavailable);
+    for (auto &playlist : m_playlists) {
+        if (playlist.id != state->playlistId) continue;
+        playlist.tracks = tracks;
+        if (error.isEmpty()) playlist.expectedTrackCount = tracks.size();
+        break;
+    }
+    if (detail.isEmpty()) m_loadedPlaylists.insert(state->playlistId);
+    state->callback(tracks, detail);
+}
+
+void NeteaseApiClient::searchCatalog(const QString &query, int page, CatalogSearchCallback callback)
+{
+    CatalogSearchPage result;
+    result.page = qMax(1, page);
+    if (query.trimmed().isEmpty()) { result.hasMore = false; result.total = 0; callback(result, {}); return; }
+    const int generation = m_generation;
+    requestJson(QStringLiteral("/cloudsearch"), {{QStringLiteral("keywords"), query.trimmed()},
+        {QStringLiteral("limit"), result.pageSize}, {QStringLiteral("offset"), (result.page - 1) * result.pageSize}},
+        m_cookie, [this, generation, result, callback = std::move(callback)]
+        (const QJsonObject &body, const QString &transport) mutable {
+        if (generation != m_generation) { callback(result, QStringLiteral("网易云账号已切换，请重新搜索。")); return; }
+        QString error = neteaseError(body, transport);
+        const auto data = body.value(QStringLiteral("result")).toObject();
+        if (error.isEmpty() && !body.value(QStringLiteral("result")).isObject())
+            error = QStringLiteral("网易云没有返回有效的搜索结果。");
+        if (!error.isEmpty()) { callback(result, error); return; }
+        const auto songs = parseNeteaseTracks(data.value(QStringLiteral("songs")).toArray());
+        for (const auto &track : songs) result.tracks.append({track, MusicPlatform::NetEaseCloud});
+        result.total = data.value(QStringLiteral("songCount")).toInt(-1);
+        result.hasMore = !songs.isEmpty() && (result.total >= 0
+            ? result.page * result.pageSize < result.total : songs.size() >= result.pageSize);
+        callback(result, {});
     });
 }

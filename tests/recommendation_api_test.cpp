@@ -93,7 +93,9 @@ int main(int argc, char **argv)
     MockService service;
     int mode = 0;
     bool validProfile = false;
+    QString expectedQuality = QStringLiteral("standard");
     service.respond = [&](const QString &path, const QJsonObject &body, const QByteArray &header) -> QJsonObject {
+        if (path == "/user/playlist") return {{"code", 200}, {"playlist", QJsonArray{}}, {"more", false}};
         if (path == "/everyday/recommend") {
             verify(body.value("platform") == "android" && header.contains("token=fixture"),
                    "Kugou recommendations must use the authorized account and existing mobile endpoint.");
@@ -130,7 +132,7 @@ int main(int argc, char **argv)
                 {"tlyric", QJsonObject{{"lyric", QStringLiteral("[00:01.250]译文")}}}};
         }
         if (path == "/song/url/v1") {
-            verify(body.value("id") == "456" && !body.contains("unblock"),
+            verify(body.value("id") == "456" && body.value("level").toString() == expectedQuality && !body.contains("unblock"),
                    "The client must request its own track and never ask for alternate sources.");
             return {{"code", 200}, {"data", QJsonArray{
                 QJsonObject{{"id", 999}, {"url", "https://wrong.example/song.mp3"}},
@@ -225,6 +227,14 @@ int main(int argc, char **argv)
         awaitCallback([&](auto done) { netease.fetchAudioUrl(neteaseTrack, [&, done](const QUrl &url, const QString &error) {
             verify(mode == 4 ? url.isEmpty() && !error.isEmpty()
                 : error.isEmpty() && url.host() == "authorized.example", "Audio must match its requested ID and fail when the platform provides no authorized URL."); done();
+        }); });
+    }
+    mode = 0;
+    for (AudioQuality quality : {AudioQuality::Standard, AudioQuality::High, AudioQuality::Lossless}) {
+        expectedQuality = neteaseQualityLevel(quality);
+        netease.setAudioQuality(quality);
+        awaitCallback([&](auto done) { netease.fetchAudioUrl(neteaseTrack, [done](const QUrl &url, const QString &error) {
+            verify(error.isEmpty() && url.host() == "authorized.example", "Every NetEase quality must resolve its own authorized recording."); done();
         }); });
     }
     mode = 0;

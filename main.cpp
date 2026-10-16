@@ -257,6 +257,16 @@ public:
         m_drawerHint = drawerHint;
         drawerHint->setStyleSheet(QStringLiteral("color: #94a3b4; font-size: 11px;"));
         drawerContent->addWidget(drawerHint);
+        m_drawerPlatformSwitch = new JellyButton(QStringLiteral("切换歌单平台"), m_drawer);
+        m_drawerPlatformSwitch->setObjectName(QStringLiteral("playlistPlatformSwitch"));
+        m_drawerPlatformSwitch->setFixedHeight(36);
+        m_drawerPlatformSwitch->setIconSize(QSize(20, 20));
+        m_drawerPlatformSwitch->setVisible(!ReleaseConfig::KugouOnly);
+        drawerContent->addWidget(m_drawerPlatformSwitch);
+        connect(m_drawerPlatformSwitch, &QPushButton::clicked, this, [this] {
+            if (m_platform->count() > 1)
+                m_platform->setCurrentIndex((m_platform->currentIndex() + 1) % m_platform->count());
+        });
         m_navigation = new QListWidget(m_drawer);
         m_navigation->addItems({QStringLiteral("全部歌单"), QStringLiteral("收藏歌单"), QStringLiteral("自建歌单"), QStringLiteral("全部音乐")});
         // Keep the section model separate from the visible controls. A fixed
@@ -485,8 +495,10 @@ public:
         });
         connect(m_player, &QMediaPlayer::durationChanged, m_dock, [this](qint64 duration) {
             m_dock->setDuration(duration);
+            restoreQualityPosition();
         });
         connect(m_player, &QMediaPlayer::seekableChanged, m_dock, [this](bool seekable) {
+            restoreQualityPosition();
             m_dock->setSeekable(seekable && !m_sourceRequestPending);
             m_songPage->setSeekable(seekable && !m_sourceRequestPending);
         });
@@ -519,6 +531,7 @@ public:
         });
         connect(m_player, &QMediaPlayer::mediaStatusChanged, this,
                 [this](QMediaPlayer::MediaStatus status) {
+            restoreQualityPosition();
             if (status == QMediaPlayer::EndOfMedia) {
                 m_pendingTitle.clear();
                 const int request = m_playRequest;
@@ -537,15 +550,10 @@ public:
             }
         });
         connect(m_platform, &QComboBox::currentIndexChanged, this, [this] {
-            const QString query = m_search->text();
-            const QSignalBlocker searchSignals(m_search);
-            m_search->clear();
-            m_searchTimer.stop();
+            updateDrawerPlatformSwitch();
+            updateDockQuality();
             updateCatalogSearchHint();
             refresh(true);
-            m_search->setText(query);
-            if (!query.trimmed().isEmpty())
-                startCatalogSearch();
         });
         connect(m_navigation, &QListWidget::currentRowChanged, this, [this] {
             showLibraryPage();
@@ -616,9 +624,15 @@ public:
             [this] { loadVisibleTrackCovers(); });
         connect(m_tracks, &QTableWidget::cellDoubleClicked, this, [this] { playSelected(); });
         connect(retryLibrary, &QPushButton::clicked, this, [this] {
-            if (m_kugouAccountConnected)
+            if (provider() && provider()->platform() == MusicPlatform::NetEaseCloud) {
+                m_neteaseLibraryErrors.clear();
+                if (m_neteaseApi.playlists().isEmpty()) m_neteaseApi.loadPlaylists();
+                else pumpNeteaseLibrary();
+            } else if (m_kugouAccountConnected) {
                 startLibrarySync(true);
+            }
         });
+        m_dock->onAudioQualityChanged = [this](AudioQuality quality) { changePlaybackQuality(quality); };
         m_dock->onPlayPause = [this] { togglePlayback(); };
         m_dock->onPrevious = [this] {
             if (m_playbackQueue.previous())
@@ -684,6 +698,7 @@ public:
             m_loginPage->setKugouQr(image);
         };
         m_kugouApi.onPlaylistsReady = [this](const QVector<Playlist> &playlists) {
+            if (m_queuePlatform == MusicPlatform::Kugou) {
             ++m_playRequest;
             m_pendingTitle.clear();
             m_sourceRequestPending = false;
@@ -692,6 +707,7 @@ public:
             m_player->setSource(QUrl());
             m_dock->setBusy(false);
             m_dock->setTrack(QStringLiteral("尚未播放"), QStringLiteral("双击歌曲开始播放"));
+            }
             ++m_kugouGeneration;
             resetCatalogSearch();
             m_kugouTrackCache.clear();
@@ -744,6 +760,22 @@ public:
         };
         m_neteaseApi.onLoginChanged = [this](bool connected) {
             if (!ReleaseConfig::platformAvailable(MusicPlatform::NetEaseCloud)) return;
+            ++m_neteaseGeneration;
+            ++m_neteaseLibraryRevision;
+            m_neteaseLoading.clear();
+            m_neteaseCompleted.clear();
+            m_neteaseLibraryErrors.clear();
+            m_neteaseViewPending = false;
+            resetCatalogSearch();
+            if (!connected && m_queuePlatform == MusicPlatform::NetEaseCloud) {
+                ++m_playRequest;
+                m_sourceRequestPending = false;
+                m_playbackQueue.setTracks({}, -1);
+                m_player->stop();
+                m_player->setSource(QUrl());
+                m_dock->setBusy(false);
+                m_dock->setTrack(QStringLiteral("网易云账号未连接"), QStringLiteral("请重新扫码登录"));
+            }
             ++m_recommendationRequests[static_cast<int>(MusicPlatform::NetEaseCloud)];
             m_dailyTracks.remove(static_cast<int>(MusicPlatform::NetEaseCloud));
             m_recommendationLoaded.remove(static_cast<int>(MusicPlatform::NetEaseCloud));
@@ -764,10 +796,23 @@ public:
                     refresh();
                 }
             }
+            if (!connected && m_pages->currentWidget() == m_playerPage) refresh(true);
             requestRecommendations(MusicPlatform::NetEaseCloud, true);
+        };
+        m_neteaseApi.onPlaylistsReady = [this](const QVector<Playlist> &) {
+            ++m_neteaseLibraryRevision;
+            m_neteaseLoading.clear();
+            m_neteaseCompleted.clear();
+            m_neteaseLibraryErrors.clear();
+            m_neteaseViewPending = false;
+            if (provider() && provider()->platform() == MusicPlatform::NetEaseCloud) refresh(true);
+            pumpNeteaseLibrary();
         };
 
         QSettings appearance;
+        m_kugouApi.setAudioQuality(audioQualityFromSetting(appearance.value(QStringLiteral("audio/kugouQuality"), 0).toInt()));
+        m_neteaseApi.setAudioQuality(audioQualityFromSetting(appearance.value(QStringLiteral("audio/neteaseQuality"), 0).toInt()));
+        updateDockQuality();
         bool validVolume = false;
         const qreal storedVolume = appearance.value(QStringLiteral("audio/musicVolume"), 1.0).toDouble(&validVolume);
         const qreal musicVolume = validVolume && qIsFinite(storedVolume) ? qBound<qreal>(0, storedVolume, 1) : 1;
@@ -1211,19 +1256,46 @@ private:
         }
     }
 
+    bool accountConnected(MusicPlatform platform) const
+    {
+        return platform == MusicPlatform::Kugou ? m_kugouAccountConnected
+            : platform == MusicPlatform::NetEaseCloud && m_neteaseApi.isLoggedIn();
+    }
+
+    int accountGeneration(MusicPlatform platform) const
+    {
+        return platform == MusicPlatform::Kugou ? m_kugouGeneration : m_neteaseGeneration;
+    }
+
+    void updateDrawerPlatformSwitch()
+    {
+        if (!m_drawerPlatformSwitch || !provider()) return;
+        const auto platform = provider()->platform();
+        const auto next = platform == MusicPlatform::Kugou ? MusicPlatform::NetEaseCloud : MusicPlatform::Kugou;
+        m_drawerPlatformSwitch->setText(QStringLiteral("%1 · 切换到%2").arg(platformName(platform), platformName(next)));
+        m_drawerPlatformSwitch->setIcon(QIcon(platform == MusicPlatform::Kugou
+            ? QStringLiteral(":/platforms/kugou.ico") : QStringLiteral(":/platforms/netease.ico")));
+        m_drawerPlatformSwitch->setToolTip(QStringLiteral("只切换歌单视图，保留两边登录和正在播放的歌曲"));
+    }
+
     void updateCatalogSearchHint()
     {
-        m_search->setPlaceholderText(QStringLiteral("搜索酷狗全平台歌曲、歌手"));
+        m_search->setPlaceholderText(ReleaseConfig::KugouOnly ? QStringLiteral("搜索酷狗全平台歌曲、歌手")
+            : QStringLiteral("搜索酷狗、网易云歌曲或歌手"));
+    }
+
+    QVector<const MusicProvider *> catalogProviders() const
+    {
+        QVector<const MusicProvider *> sources;
+        for (const auto &entry : m_providers)
+            if (accountConnected(entry->platform())) sources.append(entry.get());
+        return sources;
     }
 
     const MusicProvider *catalogProvider() const
     {
-        // Catalog integrations are independent of the playlist browser. Add
-        // other real online providers here when their integrations are ready.
-        for (const auto &entry : m_providers)
-            if (entry->platform() == MusicPlatform::Kugou)
-                return entry.get();
-        return nullptr;
+        const auto sources = catalogProviders();
+        return sources.isEmpty() ? nullptr : sources.first();
     }
 
     void resetCatalogSearch()
@@ -1235,41 +1307,38 @@ private:
         m_catalogHasMore = false;
         m_catalogQuery.clear();
         m_catalogTracks.clear();
+        m_catalogByPlatform.clear();
+        m_catalogPending.clear();
+        m_catalogNextPages.clear();
+        m_catalogMoreByPlatform.clear();
+        m_catalogTotals.clear();
+        m_catalogErrors.clear();
         m_requestedCatalogCovers.clear();
-        if (m_catalogPanel)
-            m_catalogPanel->dismiss();
+        if (m_catalogPanel) m_catalogPanel->dismiss();
     }
 
     void showCatalogPanel()
     {
-        if (!m_catalogPanel || !m_search || m_pages->currentWidget() != m_playerPage)
-            return;
+        if (!m_catalogPanel || !m_search || m_pages->currentWidget() != m_playerPage) return;
         m_catalogPanel->showAnchored(QRect(m_search->mapTo(m_playerPage, QPoint()), m_search->size()));
     }
 
     void startCatalogSearch(bool force = false)
     {
         const QString query = m_search->text().trimmed();
-        const MusicProvider *active = catalogProvider();
-        if (query.isEmpty()) {
-            resetCatalogSearch();
-            return;
-        }
-        const MusicPlatform platform = MusicPlatform::Kugou;
-        if (!force && query == m_catalogQuery && platform == m_catalogPlatform
-            && (m_catalogBusy || m_catalogPage > 0)) {
-            showCatalogPanel();
-            return;
+        if (query.isEmpty()) { resetCatalogSearch(); return; }
+        if (!force && query == m_catalogQuery && (m_catalogBusy || m_catalogPage > 0)) {
+            showCatalogPanel(); return;
         }
         resetCatalogSearch();
         m_catalogQuery = query;
-        m_catalogPlatform = platform;
+        m_catalogPlatform = catalogProvider() ? catalogProvider()->platform() : MusicPlatform::Kugou;
         m_catalogBusy = true;
         m_catalogPanel->setLoading(query);
         showCatalogPanel();
-        if (!m_kugouAccountConnected || !active) {
+        if (catalogProviders().isEmpty()) {
             m_catalogBusy = false;
-            m_catalogPanel->setError(QStringLiteral("请先在“平台连接”中登录酷狗，再搜索在线曲库。"));
+            m_catalogPanel->setError(QStringLiteral("请先在“平台连接”中登录酷狗或网易云，再搜索在线曲库。"));
             return;
         }
         requestCatalogPage(1);
@@ -1278,89 +1347,112 @@ private:
     void loadMoreCatalogResults()
     {
         if (m_catalogBusy || !m_catalogHasMore || m_catalogPage < 1 || !catalogProvider()
-            || !m_kugouAccountConnected || m_search->text().trimmed() != m_catalogQuery)
-            return;
-        m_catalogBusy = true;
-        m_catalogPanel->setLoadingMore(true);
+            || m_search->text().trimmed() != m_catalogQuery) return;
         requestCatalogPage(m_catalogPage + 1);
     }
 
     void requestCatalogPage(int page)
     {
-        const MusicProvider *active = catalogProvider();
-        if (!active) {
-            m_catalogBusy = false;
-            m_catalogPanel->setError(QStringLiteral("请先连接酷狗账号，再搜索在线曲库。"));
-            return;
-        }
+        const auto sources = catalogProviders();
         const int request = ++m_catalogRequest;
-        const int generation = m_kugouGeneration;
-        const MusicPlatform platform = m_catalogPlatform;
         const QString query = m_catalogQuery;
+        m_catalogPending.clear();
+        m_requestedCatalogCovers.clear();
+        QVector<const MusicProvider *> jobs;
+        for (const auto *source : sources) {
+            const int key = static_cast<int>(source->platform());
+            if (page > 1 && !m_catalogMoreByPlatform.value(key, true) && !m_catalogErrors.contains(key)) continue;
+            jobs.append(source);
+            m_catalogPending.insert(key);
+            m_catalogErrors.remove(key);
+            if (!m_catalogNextPages.contains(key)) m_catalogNextPages.insert(key, 1);
+        }
+        m_catalogBusy = !jobs.isEmpty();
+        m_catalogPanel->setLoadingMore(m_catalogBusy && page > 1);
         const QPointer<PlayerWindow> guard(this);
-        active->searchCatalog(query, page,
-            [guard, request, generation, platform, query, page](const CatalogSearchPage &result, const QString &error) {
-                if (guard)
-                    guard->finishCatalogSearch(request, generation, platform, query, page, result, error);
-            });
+        for (const auto *source : jobs) {
+            const auto platform = source->platform();
+            const int sourcePage = m_catalogNextPages.value(static_cast<int>(platform), 1);
+            const int generation = accountGeneration(platform);
+            source->searchCatalog(query, sourcePage,
+                [guard, request, generation, platform, query, sourcePage](const CatalogSearchPage &result, const QString &error) {
+                    if (guard) guard->finishCatalogSearch(request, generation, platform, query, sourcePage, result, error);
+                });
+            if (!guard) return;
+        }
     }
 
     void finishCatalogSearch(int request, int generation, MusicPlatform platform, const QString &query,
                              int page, const CatalogSearchPage &result, const QString &error)
     {
-        // Playlist synchronization replaces provider objects. Identity is the
-        // catalog source and account generation, never the playlist browser.
-        if (request != m_catalogRequest || generation != m_kugouGeneration || !m_kugouAccountConnected || !catalogProvider()
-            || catalogProvider()->platform() != platform || m_catalogQuery != query
-            || m_search->text().trimmed() != query)
-            return;
-        m_catalogBusy = false;
-        m_catalogPanel->setLoadingMore(false);
+        if (request != m_catalogRequest || generation != accountGeneration(platform)
+            || !accountConnected(platform) || m_catalogQuery != query || m_search->text().trimmed() != query) return;
+        const int key = static_cast<int>(platform);
+        if (!m_catalogPending.remove(key)) return;
         if (!error.isEmpty()) {
-            m_catalogPanel->setError(error);
-            return;
-        }
-        QSet<QString> known;
-        for (const CatalogTrack &item : m_catalogTracks)
-            known.insert(platformKey(item.platform) + QLatin1Char(':') + trackKey(item.track));
-        for (const CatalogTrack &item : result.tracks) {
-            if (item.platform != platform)
-                continue;
-            const QString key = platformKey(item.platform) + QLatin1Char(':') + trackKey(item.track);
-            if (!known.contains(key)) {
-                known.insert(key);
-                m_catalogTracks.append(item);
+            m_catalogErrors.insert(key, platformName(platform) + QStringLiteral("：") + error);
+        } else {
+            auto &rows = m_catalogByPlatform[key];
+            QSet<QString> known;
+            for (const auto &item : rows) known.insert(trackKey(item.track));
+            const int before = rows.size();
+            for (const auto &item : result.tracks) {
+                if (item.platform != platform || known.contains(trackKey(item.track))) continue;
+                known.insert(trackKey(item.track));
+                rows.append(item);
             }
+            m_catalogNextPages[key] = page + 1;
+            m_catalogMoreByPlatform[key] = result.hasMore && rows.size() > before;
+            m_catalogTotals[key] = result.total;
+            m_catalogPage = qMax(m_catalogPage, page);
         }
-        m_catalogPage = page;
-        if (result.total >= 0)
-            m_catalogTotal = result.total;
-        m_catalogHasMore = result.hasMore && !result.tracks.isEmpty();
-        m_catalogPanel->setResults(query, m_catalogTracks, m_catalogTotal, m_catalogHasMore);
+        // Interleave sources so both platform badges appear in the first screen.
+        m_catalogTracks.clear();
+        const auto sources = catalogProviders();
+        int maxRows = 0;
+        for (const auto *source : sources) maxRows = qMax(maxRows, int(m_catalogByPlatform.value(static_cast<int>(source->platform())).size()));
+        for (int row = 0; row < maxRows; ++row)
+            for (const auto *source : sources) {
+                const auto &rows = m_catalogByPlatform[static_cast<int>(source->platform())];
+                if (row < rows.size()) m_catalogTracks.append(rows.at(row));
+            }
+        m_catalogBusy = !m_catalogPending.isEmpty();
+        m_catalogHasMore = !m_catalogErrors.isEmpty();
+        m_catalogTotal = 0;
+        bool knownTotals = true;
+        for (const auto *source : sources) {
+            const int sourceKey = static_cast<int>(source->platform());
+            m_catalogHasMore |= m_catalogMoreByPlatform.value(sourceKey, false);
+            const int total = m_catalogTotals.value(sourceKey, -1);
+            knownTotals &= total >= 0;
+            if (total >= 0) m_catalogTotal += total;
+        }
+        if (!knownTotals) m_catalogTotal = -1;
+        if (!m_catalogTracks.isEmpty() || !m_catalogBusy)
+            m_catalogPanel->setResults(query, m_catalogTracks, m_catalogTotal, m_catalogHasMore);
+        m_catalogPanel->setLoadingMore(m_catalogBusy);
+        if (!m_catalogBusy && !m_catalogErrors.isEmpty()) {
+            QStringList errors;
+            for (const auto &detail : m_catalogErrors) errors.append(detail);
+            m_catalogPanel->setError(errors.join(QLatin1Char('\n')));
+        }
         showCatalogPanel();
         loadVisibleCatalogCovers();
     }
 
     void playCatalogTrack(int row)
     {
-        if (row < 0 || row >= m_catalogTracks.size())
-            return;
+        if (row < 0 || row >= m_catalogTracks.size()) return;
         const CatalogTrack selected = m_catalogTracks.at(row);
-        if (selected.platform != MusicPlatform::Kugou) {
-            statusBar()->showMessage(QStringLiteral("%1的在线播放尚未接入。").arg(platformName(selected.platform)), 5000);
-            return;
-        }
-        if (!m_kugouAccountConnected && selected.track.audioUrl.isEmpty()) {
-            statusBar()->showMessage(QStringLiteral("请先登录酷狗再播放。"), 5000);
-            return;
+        if (!accountConnected(selected.platform) && selected.track.audioUrl.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("请先登录%1再播放。").arg(platformName(selected.platform)), 5000); return;
         }
         QVector<Track> tracks;
         int selectedIndex = -1;
         for (int index = 0; index < m_catalogTracks.size(); ++index) {
-            const CatalogTrack &item = m_catalogTracks.at(index);
+            const auto &item = m_catalogTracks.at(index);
             if (item.platform == selected.platform) {
-                if (index == row)
-                    selectedIndex = tracks.size();
+                if (index == row) selectedIndex = tracks.size();
                 tracks.append(item.track);
             }
         }
@@ -1382,7 +1474,7 @@ private:
         if (last < first)
             last = qMin(static_cast<int>(m_catalogTracks.size()) - 1, first + 8);
         const QString query = m_catalogQuery;
-        const int generation = m_kugouGeneration;
+        const int generation = m_catalogRequest;
         const qreal requestDpr = m_surface->devicePixelRatioF();
         const QPointer<PlayerWindow> guard(this);
         for (int row = first; row <= last; ++row) {
@@ -1397,12 +1489,12 @@ private:
                 continue;
             m_requestedCatalogCovers.insert(key);
             auto apply = [guard, query, generation, key, requestDpr](const QUrl &url) {
-                if (!guard || url.isEmpty() || generation != guard->m_kugouGeneration || query != guard->m_catalogQuery)
+                if (!guard || url.isEmpty() || generation != guard->m_catalogRequest || query != guard->m_catalogQuery)
                     return;
                 if (!qFuzzyCompare(requestDpr, guard->m_surface->devicePixelRatioF()))
                     return;
                 guard->requestCover(url, [guard, query, generation, key, requestDpr](const QIcon &icon) {
-                    if (!guard || generation != guard->m_kugouGeneration || query != guard->m_catalogQuery)
+                    if (!guard || generation != guard->m_catalogRequest || query != guard->m_catalogQuery)
                         return;
                     if (!qFuzzyCompare(requestDpr, guard->m_surface->devicePixelRatioF()))
                         return;
@@ -1505,13 +1597,16 @@ private:
         resetCatalogSearch();
         const QString previousPlatform = m_platform->currentText();
         m_enabledPlatforms = ReleaseConfig::filterPlatforms(platforms);
+        if (ReleaseConfig::DualPlatformRelease)
+            for (auto platform : ReleaseConfig::availablePlatforms())
+                if (!m_enabledPlatforms.contains(platform)) m_enabledPlatforms.append(platform);
         m_providers.clear();
         m_platform->blockSignals(true);
         m_platform->clear();
         for (MusicPlatform platform : m_enabledPlatforms) {
             if (platform == MusicPlatform::Kugou && m_kugouAccountConnected) {
                 m_providers.emplace_back(std::make_unique<PlaylistSnapshotProvider>(platform, m_kugouPlaylists, &m_kugouApi));
-            } else if (platform == MusicPlatform::NetEaseCloud && m_neteaseApi.isLoggedIn()) {
+            } else if (platform == MusicPlatform::NetEaseCloud) {
                 m_providers.emplace_back(std::make_unique<NeteaseMusicProvider>(&m_neteaseApi));
             } else {
                 m_providers.emplace_back(std::make_unique<MockMusicProvider>(platform));
@@ -1522,6 +1617,7 @@ private:
         if (previousIndex >= 0)
             m_platform->setCurrentIndex(previousIndex);
         m_platform->blockSignals(false);
+        updateDrawerPlatformSwitch();
         updateCatalogSearchHint();
     }
 
@@ -1537,14 +1633,14 @@ private:
         QSettings settings;
         settings.setValue(QStringLiteral("selectedPlatforms"), keys);
         settings.setValue(QStringLiteral("setupCompleted"), true);
-        settings.setValue(QStringLiteral("demoMode"), !m_kugouAccountConnected);
+        settings.setValue(QStringLiteral("demoMode"), !m_kugouAccountConnected && !m_neteaseApi.isLoggedIn());
 
         configurePlatforms(selected);
         m_pages->setCurrentWidget(m_playerPage);
         showHomePage();
-        statusBar()->showMessage(m_kugouAccountConnected
-            ? QStringLiteral("酷狗账号已连接，正在显示账号音乐库。")
-            : QStringLiteral("演示模式：平台账号未授权，当前显示本地示例数据。"));
+        statusBar()->showMessage((m_kugouAccountConnected || m_neteaseApi.isLoggedIn())
+            ? QStringLiteral("平台账号已连接，正在显示账号音乐库。")
+            : QStringLiteral("请通过平台连接扫码登录，读取自己的歌单。"));
         refresh();
     }
 
@@ -1559,8 +1655,14 @@ private:
         const MusicProvider *active = provider();
         if (!active)
             return;
-        m_librarySummary->setVisible(active->platform() == MusicPlatform::Kugou && m_kugouAccountConnected);
+        m_librarySummary->setVisible(accountConnected(active->platform()));
+        updateLibrarySummary();
         rebuildDrawerPlaylists();
+        if (active->platform() == MusicPlatform::NetEaseCloud && !m_neteaseApi.isLoggedIn()) {
+            m_heading->setText(QStringLiteral("网易云音乐尚未登录，请通过“平台连接”扫码"));
+            setTracks({});
+            return;
+        }
         const QString query = m_search->text().trimmed();
         const int section = m_navigation->currentRow();
         if (!query.isEmpty()) {
@@ -1760,8 +1862,13 @@ private:
         }
         if (provider() && provider()->platform() == MusicPlatform::Kugou && m_kugouAccountConnected)
             loadKugouPlaylist(playlist, false);
-        else
+        else {
+            if (provider() && provider()->platform() == MusicPlatform::NetEaseCloud) {
+                m_neteaseLibraryErrors.remove(playlist.id);
+                loadNeteasePlaylist(playlist);
+            }
             applyPlaylistSearch();
+        }
     }
 
     void loadKugouPlaylist(const Playlist &playlist, bool liked)
@@ -1830,6 +1937,58 @@ private:
         });
     }
 
+    void updateNeteaseLibrarySummary()
+    {
+        if (!provider() || provider()->platform() != MusicPlatform::NetEaseCloud) return;
+        const auto &lists = m_neteaseApi.playlists();
+        m_librarySummary->setText(QStringLiteral("网易云音乐库：%1 首（去重），%2 / %3 个歌单完整加载，%4 个未完整加载%5")
+            .arg(allPlaylistTracks(lists).size()).arg(m_neteaseCompleted.size()).arg(lists.size())
+            .arg(m_neteaseLibraryErrors.size()).arg(m_neteaseLoading.isEmpty() ? QString() : QStringLiteral("，正在加载…")));
+        QStringList errors;
+        for (const auto &list : lists)
+            if (m_neteaseLibraryErrors.contains(list.id)) errors.append(list.name + QStringLiteral("：") + m_neteaseLibraryErrors.value(list.id));
+        m_librarySummary->setToolTip(errors.join(QLatin1Char('\n')));
+    }
+
+    void loadNeteasePlaylist(const Playlist &playlist)
+    {
+        if (!m_neteaseApi.isLoggedIn() || m_neteaseCompleted.contains(playlist.id)
+            || m_neteaseLoading.contains(playlist.id) || m_neteaseLoading.size() >= 3) return;
+        m_neteaseLoading.insert(playlist.id);
+        const int generation = m_neteaseLibraryRevision;
+        const QString id = playlist.id;
+        const QPointer<PlayerWindow> guard(this);
+        m_neteaseApi.fetchPlaylistTracks(playlist, [guard, id, generation](const QVector<Track> &, const QString &error) {
+            if (!guard || generation != guard->m_neteaseLibraryRevision) return;
+            guard->m_neteaseLoading.remove(id);
+            if (error.isEmpty()) { guard->m_neteaseCompleted.insert(id); guard->m_neteaseLibraryErrors.remove(id); }
+            else guard->m_neteaseLibraryErrors.insert(id, error);
+            QTimer::singleShot(0, guard, [guard, generation] {
+                if (guard && generation == guard->m_neteaseLibraryRevision) guard->pumpNeteaseLibrary();
+            });
+            if (guard->m_neteaseViewPending) return;
+            guard->m_neteaseViewPending = true;
+            QTimer::singleShot(150, guard, [guard, generation] {
+                if (!guard || generation != guard->m_neteaseLibraryRevision) return;
+                guard->m_neteaseViewPending = false;
+                if (guard->provider() && guard->provider()->platform() == MusicPlatform::NetEaseCloud) guard->refresh(true);
+            });
+        });
+    }
+
+    void pumpNeteaseLibrary()
+    {
+        if (!m_neteaseApi.isLoggedIn()) return;
+        const auto lists = m_neteaseApi.playlists();
+        for (const auto &playlist : lists) {
+            if (m_neteaseLoading.size() >= 2) break;
+            if (m_neteaseCompleted.contains(playlist.id) || m_neteaseLoading.contains(playlist.id)
+                || m_neteaseLibraryErrors.contains(playlist.id)) continue;
+            loadNeteasePlaylist(playlist);
+        }
+        updateNeteaseLibrarySummary();
+    }
+
     void startLibrarySync(bool retry = false)
     {
         if (retry)
@@ -1857,6 +2016,9 @@ private:
 
     void updateLibrarySummary()
     {
+        if (provider() && provider()->platform() == MusicPlatform::NetEaseCloud) {
+            updateNeteaseLibrarySummary(); return;
+        }
         const auto tracks = allPlaylistTracks(m_kugouPlaylists);
         m_librarySummary->setText(QStringLiteral("音乐库：%1 首（去重），%2 / %3 个歌单完整加载，%4 个未完整加载%5")
             .arg(tracks.size()).arg(m_completedPlaylists.size()).arg(m_kugouPlaylists.size())
@@ -2156,9 +2318,8 @@ private:
             return;
         }
         const Track track = m_visibleTracks.at(row);
-        if (track.audioUrl.isEmpty()
-            && (!provider() || provider()->platform() != MusicPlatform::Kugou || !m_kugouAccountConnected)) {
-            statusBar()->showMessage(QStringLiteral("当前为演示数据，没有可播放的音频地址。"), 5000);
+        if (track.audioUrl.isEmpty() && (!provider() || !accountConnected(provider()->platform()))) {
+            statusBar()->showMessage(QStringLiteral("请先登录歌曲所属平台，再播放这首歌曲。"), 5000);
             return;
         }
         m_queueUsesKugou = provider() && provider()->platform() == MusicPlatform::Kugou
@@ -2219,8 +2380,84 @@ private:
         }
     }
 
+    MusicPlatform qualityPlatform() const
+    {
+        return !m_playbackQueue.empty() ? m_queuePlatform
+            : provider() ? provider()->platform() : MusicPlatform::Kugou;
+    }
+
+    void updateDockQuality()
+    {
+        const MusicPlatform platform = qualityPlatform();
+        m_dock->setAudioQuality(platform == MusicPlatform::NetEaseCloud
+            ? m_neteaseApi.audioQuality() : m_kugouApi.audioQuality(), platformName(platform));
+    }
+
+    void restoreQualityPosition()
+    {
+        if (m_switchingTrack || m_qualityResumeRequest != m_playRequest || m_qualityResumeRequest < 0
+            || !m_player->isSeekable() || m_player->duration() <= 0
+            || (m_player->mediaStatus() != QMediaPlayer::LoadedMedia
+                && m_player->mediaStatus() != QMediaPlayer::BufferingMedia
+                && m_player->mediaStatus() != QMediaPlayer::BufferedMedia)) return;
+        // Finish the backend's load notification before changing playback state
+        // or seeking; an early seek can otherwise be reset to zero by loading.
+        const int request = m_qualityResumeRequest;
+        QTimer::singleShot(0, this, [this, request] {
+            if (request != m_playRequest || request != m_qualityResumeRequest) return;
+            m_qualityResumeRequest = -1;
+            if (m_qualityResumePaused) m_player->pause();
+            else m_player->play();
+            m_player->setPosition(qMin(m_qualityResumePosition, m_player->duration()));
+        });
+    }
+
+    void changePlaybackQuality(AudioQuality quality)
+    {
+        const MusicPlatform platform = qualityPlatform();
+        if (platform == MusicPlatform::NetEaseCloud) m_neteaseApi.setAudioQuality(quality);
+        else m_kugouApi.setAudioQuality(quality);
+        QSettings().setValue(platform == MusicPlatform::NetEaseCloud
+            ? QStringLiteral("audio/neteaseQuality") : QStringLiteral("audio/kugouQuality"), int(quality));
+        updateDockQuality();
+        const Track *current = m_playbackQueue.current();
+        if (!current || !current->audioUrl.isEmpty()) {
+            statusBar()->showMessage(QStringLiteral("已设置%1优先音质：%2").arg(platformName(platform), audioQualityName(quality)), 5000);
+            return;
+        }
+        const Track track = *current;
+        const int request = ++m_playRequest;
+        m_qualityResumeRequest = -1;
+        m_sourceRequestPending = true;
+        m_dock->setBusy(true);
+        statusBar()->showMessage(QStringLiteral("正在切换%1音质：%2").arg(platformName(platform), audioQualityName(quality)));
+        auto ready = [this, request, track](const QUrl &url, const QString &error) {
+            if (request != m_playRequest) return;
+            m_sourceRequestPending = false;
+            m_dock->setBusy(false);
+            if (!error.isEmpty() || url.isEmpty()) {
+                m_dock->setSeekable(m_player->isSeekable());
+                statusBar()->showMessage(QStringLiteral("音质切换失败，保留当前播放：%1").arg(error), 8000);
+                return;
+            }
+            m_qualityResumePosition = m_player->position();
+            m_qualityResumePaused = m_player->playbackState() == QMediaPlayer::PausedState;
+            m_qualityResumeRequest = request;
+            m_switchingTrack = true;
+            m_pendingTitle = track.title;
+            m_player->stop();
+            m_player->setSource(url);
+            m_switchingTrack = false;
+            restoreQualityPosition();
+        };
+        if (platform == MusicPlatform::NetEaseCloud) m_neteaseApi.fetchAudioUrl(track, ready);
+        else m_kugouApi.fetchAudioUrl(track, ready);
+    }
+
     void playQueueTrack()
     {
+        m_qualityResumeRequest = -1;
+        updateDockQuality();
         const Track *current = m_playbackQueue.current();
         if (!current)
             return;
@@ -2315,13 +2552,26 @@ private:
     QHash<QString, QString> m_libraryErrors;
     bool m_librarySyncActive = false;
     bool m_libraryViewPending = false;
+    int m_neteaseGeneration = 0;
+    int m_neteaseLibraryRevision = 0;
+    QSet<QString> m_neteaseLoading;
+    QSet<QString> m_neteaseCompleted;
+    QHash<QString, QString> m_neteaseLibraryErrors;
+    bool m_neteaseViewPending = false;
     int m_kugouGeneration = 0;
     bool m_kugouAccountConnected = false;
+    JellyButton *m_drawerPlatformSwitch = nullptr;
     QComboBox *m_platform = nullptr;
     QLineEdit *m_search = nullptr;
     QTimer m_searchTimer;
     CatalogSearchPanel *m_catalogPanel = nullptr;
     QVector<CatalogTrack> m_catalogTracks;
+    QHash<int, QVector<CatalogTrack>> m_catalogByPlatform;
+    QSet<int> m_catalogPending;
+    QHash<int, int> m_catalogNextPages;
+    QHash<int, bool> m_catalogMoreByPlatform;
+    QHash<int, int> m_catalogTotals;
+    QHash<int, QString> m_catalogErrors;
     QString m_catalogQuery;
     MusicPlatform m_catalogPlatform = MusicPlatform::Kugou;
     int m_catalogRequest = 0;
@@ -2365,6 +2615,9 @@ private:
     QTimer m_audioSettingsTimer;
     bool m_audioRouteInterrupted = false;
     PlaybackDock *m_dock = nullptr;
+    int m_qualityResumeRequest = -1;
+    qint64 m_qualityResumePosition = 0;
+    bool m_qualityResumePaused = false;
     PlaybackQueue m_playbackQueue;
     bool m_queueUsesKugou = false;
     MusicPlatform m_queuePlatform = MusicPlatform::Kugou;

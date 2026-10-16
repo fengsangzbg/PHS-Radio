@@ -1,11 +1,17 @@
 #include "netease_music_provider.h"
 #include "netease_api_client.h"
+#include "music_search.h"
 
 NeteaseMusicProvider::NeteaseMusicProvider(NeteaseApiClient *client) : m_client(client) {}
 MusicPlatform NeteaseMusicProvider::platform() const { return MusicPlatform::NetEaseCloud; }
-QVector<Playlist> NeteaseMusicProvider::playlists() const { return {}; }
-QVector<Track> NeteaseMusicProvider::likedTracks() const { return {}; }
-QVector<Track> NeteaseMusicProvider::search(const QString &query) const { Q_UNUSED(query) return {}; }
+QVector<Playlist> NeteaseMusicProvider::playlists() const { return m_client && m_client->isLoggedIn() ? m_client->playlists() : QVector<Playlist>{}; }
+QVector<Track> NeteaseMusicProvider::likedTracks() const { return allPlaylistTracks(playlists()); }
+QVector<Track> NeteaseMusicProvider::search(const QString &query) const { return MusicSearchIndex(likedTracks()).search(query); }
+void NeteaseMusicProvider::searchCatalog(const QString &query, int page, CatalogSearchCallback callback) const
+{
+    if (!m_client) callback({}, QStringLiteral("网易云音乐服务未连接。"));
+    else m_client->searchCatalog(query, page, std::move(callback));
+}
 void NeteaseMusicProvider::fetchDailyRecommendations(RecommendationsCallback callback) const
 {
     if (!m_client)

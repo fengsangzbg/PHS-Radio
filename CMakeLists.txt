@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(PHSRadio VERSION 0.2.4 LANGUAGES CXX)
+project(PHSRadio VERSION 0.3.0 LANGUAGES CXX)
 
-set(PHSRADIO_PRERELEASE "beta.2" CACHE STRING "Prerelease suffix; empty for a stable build")
+set(PHSRADIO_PRERELEASE "" CACHE STRING "Prerelease suffix; empty for a stable build")
 set(PHSRADIO_VERSION_STRING "${PROJECT_VERSION}")
 set(PHSRADIO_VERSION_FLAGS "0")
 if(PHSRADIO_PRERELEASE)
@@ -107,6 +107,8 @@ target_compile_definitions(PHSRadio PRIVATE
 )
 if(PHSRADIO_KUGOU_ONLY)
     target_compile_definitions(PHSRadio PRIVATE PHSRADIO_KUGOU_ONLY=1)
+else()
+    target_compile_definitions(PHSRadio PRIVATE PHSRADIO_KUGOU_NETEASE=1)
 endif()
 set(PHSRADIO_APP_OUTPUT_DIR "" CACHE PATH "Optional preview executable directory")
 if(PHSRADIO_APP_OUTPUT_DIR)
@@ -137,6 +139,17 @@ target_link_libraries(PHSRadio PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(NeteaseLibraryApiTest tests/netease_library_api_test.cpp)
+    target_link_libraries(NeteaseLibraryApiTest PRIVATE Qt6::Gui Qt6::Network MusicSearch MusicLyrics crypt32)
+    add_test(NAME netease_library_api COMMAND NeteaseLibraryApiTest)
+    set_tests_properties(netease_library_api PROPERTIES TIMEOUT 25)
+    add_executable(MultiplatformIntegrationTest tests/multiplatform_integration_test.cpp
+        mock_music_provider.cpp platform_login_page.cpp kugou_api_client.cpp playlist_snapshot_provider.cpp
+        netease_api_client.cpp netease_music_provider.cpp)
+    target_compile_definitions(MultiplatformIntegrationTest PRIVATE PHSRADIO_KUGOU_NETEASE=1)
+    target_link_libraries(MultiplatformIntegrationTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
+    add_test(NAME multiplatform_integration COMMAND MultiplatformIntegrationTest)
+    set_tests_properties(multiplatform_integration PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(VideoFrameImageTest tests/video_frame_image_test.cpp)
     target_link_libraries(VideoFrameImageTest PRIVATE VideoFrameImages)
     add_test(NAME video_frame_image COMMAND VideoFrameImageTest)

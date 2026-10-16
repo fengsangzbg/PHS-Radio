@@ -16,9 +16,20 @@ const operations = {
   '/login/qr/check': ['login_qr_check', ['key']],
   '/login/status': ['login_status', []],
   '/recommend/songs': ['recommend_songs', []],
+  '/user/playlist': ['user_playlist', ['uid', 'limit', 'offset']],
+  '/playlist/detail': ['playlist_detail', ['id']],
+  '/song/detail': ['song_detail', ['ids']],
+  '/cloudsearch': ['cloudsearch', ['keywords', 'limit', 'offset']],
   '/lyric': ['lyric', ['id']],
-  '/song/url/v1': ['song_url_v1', ['id']],
+  '/song/url/v1': ['song_url_v1', ['id', 'level']],
 };
+
+function desktopPlaybackCookie(cookie) {
+  const values = String(cookie || '').split(';').map(value => value.trim())
+    .filter(value => value && !/^os\s*=/i.test(value));
+  values.push('os=pc');
+  return values.join('; ');
+}
 
 function createBridge(api) {
   return http.createServer(async (request, response) => {
@@ -30,7 +41,7 @@ function createBridge(api) {
     };
     const route = new URL(request.url, 'http://127.0.0.1').pathname;
     if (route === '/health' && request.method === 'GET')
-      return reply(200, { code: 200, service: 'phs-radio-netease' });
+      return reply(200, { code: 200, service: 'phs-radio-netease', protocol: 3 });
     if (request.method !== 'POST' || !operations[route])
       return reply(404, { code: 404, message: 'Unsupported local API route.' });
     if (!(request.headers['content-type'] || '').startsWith('application/json'))
@@ -50,7 +61,14 @@ function createBridge(api) {
       for (const key of allowedKeys)
         if (body[key] !== undefined) params[key] = body[key];
       if (route === '/song/url/v1') {
-        params.level = 'standard';
+        params.cookie = desktopPlaybackCookie(params.cookie);
+        if (params.level !== undefined && !['standard', 'exhigh', 'lossless'].includes(params.level))
+          return reply(400, {code:400, reason:'invalid_quality', message:'Unsupported audio quality.'});
+        params.level = params.level || 'standard';
+        // The SDK defaults to XEAPI, which requires a separately registered
+        // public key on each machine. Use its supported EAPI transport instead.
+        params.crypto = 'eapi';
+        params.timeout = 10000;
         params.unblock = 'false';
         params.randomCNIP = 'false';
       }
@@ -66,7 +84,12 @@ function createBridge(api) {
       const status = upstreamStatus >= 400 && upstreamStatus <= 599 ? upstreamStatus
         : code === 301 || code === 302 ? 401 : code >= 400 && code <= 599 ? code : 502;
       return reply(status,
-                   { code, message: 'The platform request could not be completed.' });
+                   {
+                     code,
+                     reason: String(error?.message || '').includes('xeapi public key is missing')
+                       ? 'playback_protocol_unavailable' : 'upstream_unavailable',
+                     message: 'The platform request could not be completed.'
+                   });
     }
   });
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "music_quality.h"
 #include <QColor>
 #include <QPoint>
 #include <QRect>
@@ -28,6 +29,7 @@ public:
     void setMuted(bool muted);
     void setAccentColor(const QColor &color);
     void setShuffle(bool shuffle);
+    void setAudioQuality(AudioQuality quality, const QString &platform);
     void setExpanded(bool expanded);
     void setPinned(bool pinned);
     void setInteractionHeld(bool held);
@@ -46,6 +48,7 @@ public:
     JellyButton *songPageButton() const;
     JellyButton *lyricsButton() const;
 
+    std::function<void(AudioQuality)> onAudioQualityChanged;
     std::function<void()> onPlayPause;
     std::function<void()> onPrevious;
     std::function<void()> onNext;
@@ -94,6 +97,7 @@ private:
     JellyButton *m_previous;
     JellyButton *m_next;
     JellyButton *m_mode;
+    JellyButton *m_quality;
     JellyButton *m_pin;
     JellyButton *m_palette;
     JellyButton *m_songPage;
@@ -118,6 +122,8 @@ private:
     bool m_syncingProgress = false;
     bool m_interactionHeld = false;
     bool m_colorRequestActive = false;
+    bool m_qualityMenuActive = false;
+    AudioQuality m_audioQuality = AudioQuality::Standard;
     qreal m_volume = 1;
     qreal m_lastAudibleVolume = 1;
     bool m_muted = false;

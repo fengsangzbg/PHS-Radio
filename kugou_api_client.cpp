@@ -1225,6 +1225,11 @@ void KugouApiClient::reportError(const QString &error) const
 
 void KugouApiClient::fetchAudioUrl(const Track &track, AudioCallback callback)
 {
+    fetchAudioUrl(track, m_audioQuality, std::move(callback));
+}
+
+void KugouApiClient::fetchAudioUrl(const Track &track, AudioQuality quality, AudioCallback callback)
+{
     if (m_authorization.isEmpty()) {
         callback({}, QStringLiteral("请先登录酷狗账号。"));
         return;
@@ -1240,7 +1245,7 @@ void KugouApiClient::fetchAudioUrl(const Track &track, AudioCallback callback)
         return;
     }
     if (m_deviceId.isEmpty()) {
-        ensurePlaybackDevice([this, track, callback, authorization, generation](const QString &error) {
+        ensurePlaybackDevice([this, track, quality, callback, authorization, generation](const QString &error) {
             if (generation != m_accountGeneration || authorization != m_authorization) {
                 callback({}, QStringLiteral("酷狗账号已切换，请重新点击播放。"));
                 return;
@@ -1249,11 +1254,13 @@ void KugouApiClient::fetchAudioUrl(const Track &track, AudioCallback callback)
                 callback({}, error);
                 return;
             }
-            fetchAudioUrl(track, callback);
+            fetchAudioUrl(track, quality, callback);
         });
         return;
     }
-    QJsonObject body{{QStringLiteral("hash"), hash}, {QStringLiteral("quality"), 128}};
+    const QJsonValue requestedQuality = quality == AudioQuality::Lossless ? QJsonValue(QStringLiteral("flac"))
+        : QJsonValue(quality == AudioQuality::High ? 320 : 128);
+    QJsonObject body{{QStringLiteral("hash"), hash}, {QStringLiteral("quality"), requestedQuality}};
     if (!track.albumId.isEmpty())
         body.insert(QStringLiteral("album_id"), track.albumId);
     if (!track.albumAudioId.isEmpty())
