@@ -34,7 +34,10 @@ GlassTitleBar::GlassTitleBar(QMainWindow *owner, QWidget *parent)
     m_update->setObjectName(QStringLiteral("windowUpdate"));
     m_update->setAccessibleName(QStringLiteral("检查软件更新"));
     m_update->setToolTip(QStringLiteral("检查新版本，下载并更新软件"));
-    m_update->setFixedSize(68, 30);
+    m_update->setFixedSize(76, 32);
+    QFont captionFont = m_update->font();
+    captionFont.setPixelSize(13);
+    m_update->setFont(captionFont);
     layout->addWidget(m_update);
     connect(m_update, &QPushButton::clicked, this, [this] {
         if (onUpdateRequested) onUpdateRequested();

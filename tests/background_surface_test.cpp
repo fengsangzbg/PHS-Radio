@@ -788,5 +788,18 @@ int main(int argc, char **argv)
     check(!surface.m_videoFrameTimer->isActive() && !surface.m_videoFrames->take().isValid(),
           "Switching away from video must flush its latest-frame mailbox and stop its GUI timer.");
     reportFramePainting(surface, projectPath);
+    BackgroundTheme fire;
+    fire.kind = BackgroundKind::FireMeteor;
+    check(surface.setBackground(fire, &error), "The summer night theme must work without external files.");
+    QImage stale(80,80,QImage::Format_RGB32);stale.fill(Qt::red);
+    surface.setBackgroundFrame(stale);
+    check(surface.m_backgroundFrame.isNull(), "A late external capture frame must not replace the built-in night sky.");
+    surface.m_phase=1.0;
+    const QImage night=sample(surface,surface.rect());
+    surface.m_phase=1.13;
+    check(sample(surface,surface.rect())!=night,
+          "Fire meteors must visibly move between frames, rather than display a static wallpaper.");
+    check(surface.setBackground(BackgroundTheme(), &error), "Switching back must restore water.");
+    check(sample(surface,surface.rect())!=night, "Night-sky frames must not leak into the water cache.");
     return 0;
 }

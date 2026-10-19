@@ -130,9 +130,9 @@ int main(int argc, char **argv)
     check(newImage.save(newPath), "The newer cover fixture must be a valid original PNG.");
     DelayedCover oldCover(oldPng);
 
-    // QQ-only startup skips both real clients' session restoration. Playback
-    // uses directly supplied local audio and the only HTTP request is loopback.
-    PlayerWindow window({MusicPlatform::QQMusic}, true);
+    // This fixture starts after onboarding. The native entrance journey has
+    // its own test; no real account is restored by this local-media test.
+    PlayerWindow window({MusicPlatform::QQMusic}, true, true);
     window.m_dayTimer.stop();
     window.m_audioOutput->setMuted(true);
     window.m_audioOutput->setVolume(0);

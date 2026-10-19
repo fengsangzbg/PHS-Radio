@@ -1,0 +1,7 @@
+<RCC>
+  <qresource prefix="/entrance">
+    <file alias="sky.png">entrance/aquarium-sky.png</file>
+    <file alias="whale.png">entrance/humpback.png</file>
+    <file alias="scene.frag">entrance/scene.frag</file>
+  </qresource>
+</RCC>

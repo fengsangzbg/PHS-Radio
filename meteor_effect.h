@@ -1,7 +1,6 @@
 #pragma once
 
 #include <QElapsedTimer>
-#include <QPixmap>
 #include <QRegion>
 #include <QWidget>
 #include <array>
@@ -11,6 +10,9 @@ class QTimer;
 class PlaybackMeteor final : public QWidget {
 public:
     explicit PlaybackMeteor(QWidget *host);
+    enum class Style { GreenLaser, Fire };
+    void setStyle(Style style);
+    Style style() const { return m_style; }
     void trigger();
     bool isRunning() const;
     qreal progress() const;
@@ -22,7 +24,6 @@ protected:
 
 private:
     void advance();
-    void rebuildSprites();
     struct Meteor {
         QPointF start;
         QPointF end;
@@ -36,6 +37,7 @@ private:
     qreal meteorProgress(int index) const;
     qreal meteorOpacity(int index) const;
     QPointF headPosition(int index = 0) const;
+    QPointF tailPosition(int index = 0) const;
     QPointF direction(int index = 0) const;
     QRegion frameRegion() const;
     QRect frameBounds() const;
@@ -43,14 +45,11 @@ private:
     QWidget *m_host;
     QTimer *m_timer;
     QElapsedTimer m_clock;
-    QPixmap m_headSprite;
-    QPixmap m_tailSprite;
     QRegion m_previousDirty;
-    qreal m_cachedDpr = 0;
     qreal m_progress = 0;
-    qreal m_tailLength = 0;
     bool m_running = false;
-    // A single clock and two shared sprites animate the complete shower.
+    Style m_style = Style::GreenLaser;
+    // A single clock fades fixed, antialiased vector beams.
     static constexpr int DurationMs = 1120;
     static const std::array<Meteor, 7> Meteors;
 };

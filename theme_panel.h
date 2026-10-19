@@ -10,6 +10,8 @@ class QLabel;
 class QSlider;
 class JellyButton;
 class QShowEvent;
+class QHideEvent;
+class QTimer;
 
 class ThemePanel final : public QDialog {
 public:
@@ -22,6 +24,9 @@ public:
 
 protected:
     void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
 
 private:
     BackgroundTheme m_theme;
@@ -33,6 +38,9 @@ private:
     QSlider *m_dimming;
     QLabel *m_engineFrameRate;
     JellyButton *m_engineSettings;
+    QTimer *m_glassRefresh;
+    JellyButton *m_waterTheme;
+    JellyButton *m_fireTheme;
     void selectTheme(const BackgroundTheme &theme);
     void refreshWallpapers(const QStringList &steamRoots = {});
     void updateCurrent();

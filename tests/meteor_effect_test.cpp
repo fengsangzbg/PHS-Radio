@@ -18,7 +18,7 @@ void waitForEvents(int duration)
     events.exec();
 }
 
-bool hasBlueGlowNear(const QImage &frame, const QPointF &position)
+bool hasGreenGlowNear(const QImage &frame, const QPointF &position)
 {
     const QPoint center(qRound(position.x()), qRound(position.y()));
     for (int y = center.y() - 3; y <= center.y() + 3; ++y)
@@ -26,8 +26,8 @@ bool hasBlueGlowNear(const QImage &frame, const QPointF &position)
             if (!frame.rect().contains(x, y))
                 continue;
             const QColor pixel = frame.pixelColor(x, y);
-            if (pixel.alpha() > 15 && pixel.blue() > pixel.red() + 4
-                && pixel.blue() >= pixel.green())
+            if (pixel.alpha() > 15 && pixel.green() > pixel.red() + 4
+                && pixel.green() > pixel.blue())
                 return true;
         }
     return false;
@@ -50,6 +50,14 @@ int main(int argc, char **argv)
     meteor.trigger();
     check(meteor.isRunning() && meteor.progress() == 0 && meteor.geometry() == host.rect(),
           "Triggering must start a full-size transparent overlay at the beginning of the path.");
+    const QPointF firstHead=meteor.headPosition();
+    const QPointF firstTail=meteor.tailPosition();
+    QImage firstFrame(meteor.size(),QImage::Format_ARGB32_Premultiplied);
+    firstFrame.fill(Qt::transparent);
+    meteor.render(&firstFrame,QPoint(),QRegion(),QWidget::DrawChildren);
+    check(meteor.visibleMeteorCount()==1
+          && hasGreenGlowNear(firstFrame,QLineF(meteor.tailPosition(),firstHead).pointAt(.7)),
+          "The first frame must already contain a long visible streak, without a travel or growth phase.");
     check(meteor.testAttribute(Qt::WA_TransparentForMouseEvents) && host.childAt(60, 80) == &underlying,
           "The overlay must allow clicks to reach controls beneath it.");
     check(meteor.m_timer->timerType() == Qt::PreciseTimer
@@ -57,9 +65,10 @@ int main(int argc, char **argv)
           "The meteor timer must match the screen refresh interval.");
     waitForEvents(160);
     check(meteor.progress() > 0 && meteor.progress() < 1,
-          "The glowing head must move instead of remaining on its first frame.");
+          "The flash must advance through its short extinction phase.");
     const QPointF mid = meteor.headPosition();
     check(mid.x() < host.width() - 22 && mid.y() > 14, "The path must run from upper right toward lower left.");
+    check(mid==firstHead && meteor.tailPosition()==firstTail,"The streak must flash in place instead of dragging a round head across the panel.");
 
     // Sample fixed phases without scheduling another timer per particle. The
     // rendered pixels prove that companions are drawn, rather than only counted.
@@ -74,13 +83,13 @@ int main(int argc, char **argv)
     meteor.render(&frame, QPoint(), QRegion(), QWidget::DrawChildren);
     for (int index = 0; index < int(meteor.Meteors.size()); ++index) {
         const QPointF head = meteor.headPosition(index);
-        check(hasBlueGlowNear(frame, head), "Every active meteor must paint a visible blue head.");
+        check(hasGreenGlowNear(frame, head), "Every active laser must paint a visible green head.");
         check(meteor.direction(index).x() < 0 && meteor.direction(index).y() > 0,
               "All companions must travel toward the lower left.");
         check(meteor.frameRegion().contains(head.toPoint()),
               "Localized repaint regions must include every visible head.");
         for (int previous = 0; previous < index; ++previous)
-            check(QLineF(head, meteor.headPosition(previous)).length() > 8,
+            check(QLineF(head, meteor.headPosition(previous)).length() > 3,
                   "Meteor heads must be separated rather than drawn as overlapping copies.");
     }
     if (const QString snapshotPath = qEnvironmentVariable("PHSRADIO_METEOR_SNAPSHOT");
@@ -101,19 +110,36 @@ int main(int argc, char **argv)
         dirtyArea += qint64(strip.width()) * strip.height();
     check(dirtyArea < qint64(host.width()) * host.height() * 3 / 4,
           "A shower must repaint localized strips instead of the entire dock.");
+    meteor.setStyle(PlaybackMeteor::Style::Fire);
+    meteor.m_progress = .48;
+    frame.fill(Qt::transparent);
+    meteor.render(&frame,QPoint(),QRegion(),QWidget::DrawChildren);
+    bool warm = false;
+    const QPoint head = meteor.headPosition().toPoint();
+    for(int y=head.y()-4;y<=head.y()+4;++y)
+        for(int x=head.x()-4;x<=head.x()+4;++x)
+            if(frame.rect().contains(x,y)) {
+                const QColor color=frame.pixelColor(x,y);
+                warm |= color.alpha()>30 && color.red()>color.blue()+20;
+            }
+    check(warm && meteor.findChildren<QTimer *>().size()==1,
+          "Switching themes must render warm flame heads using the same single animation timer.");
+    meteor.setStyle(PlaybackMeteor::Style::GreenLaser);
     meteor.m_progress = .92;
     check(meteor.visibleMeteorCount() == 1, "The last companion must trail the leading meteor's fade.");
 
     meteor.trigger();
     check(meteor.progress() == 0 && meteor.isRunning(), "Repeated play events must safely restart the effect.");
-    check(meteor.visibleMeteorCount() == 0 && meteor.m_previousDirty.isEmpty()
+    check(meteor.visibleMeteorCount() == 1 && !meteor.m_previousDirty.isEmpty()
               && meteor.findChildren<QTimer *>().size() == 1,
-          "Restarting must clear old particle phases and retain one shared frame timer.");
+          "Restarting must immediately show a fresh streak and retain one shared frame timer.");
     host.resize(760, 180);
     QCoreApplication::processEvents();
     check(meteor.geometry() == host.rect() && meteor.isRunning(),
           "A running meteor must adapt to dock resize without losing its animation.");
-    waitForEvents(PlaybackMeteor::DurationMs + 110);
+    waitForEvents(650);
+    check(meteor.isRunning(), "The flash must remain active beyond half a second instead of disappearing immediately.");
+    waitForEvents(500);
     check(meteor.progress() == 1 && !meteor.isRunning() && meteor.isHidden()
               && !meteor.m_timer->isActive() && meteor.visibleMeteorCount() == 0
               && meteor.m_previousDirty.isEmpty(),

@@ -169,9 +169,10 @@ void verifyAnalyticWorldCoordinates()
     check(refracted.pixelColor(80, 50) == whole.pixelColor(197, 129),
           "Micro-refraction must shift only the sampled background coordinates.");
     check(content.paints == 0, "Painting song water must never recapture or render a table/content widget.");
-    const QColor dark = local.pixelColor(80, 50);
-    check(qMax(dark.red(), qMax(dark.green(), dark.blue())) < 60,
-          "The water background must remain dark rather than fill with blue-white plastic.");
+    const QColor waterColor = local.pixelColor(80, 50);
+    check(qGray(waterColor.rgb()) < 140 && waterColor.green() > waterColor.red()+12
+              && waterColor.blue() > waterColor.red()+12,
+          "Clearer water must retain blue-green depth and headroom for light text instead of clipping to white.");
     const QImage unchanged = water(viewport, viewport.rect());
     check(unchanged == local, "A frozen water frame must be deterministic and reusable across cell paints.");
     host.m_phase += 3;

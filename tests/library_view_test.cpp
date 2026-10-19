@@ -18,7 +18,7 @@ int main(int argc, char **argv)
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName("PHS Radio Tests");
     QCoreApplication::setApplicationName("Library View Test");
-    PlayerWindow window({MusicPlatform::QQMusic}, true);
+    PlayerWindow window({MusicPlatform::QQMusic}, true, true);
     window.show();
     QVector<Track> tracks;
     for (int row = 0; row < 12042; ++row) {

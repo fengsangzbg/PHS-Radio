@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(PHSRadio VERSION 0.3.0 LANGUAGES CXX)
+project(PHSRadio VERSION 0.3.1 LANGUAGES CXX)
 
 set(PHSRADIO_PRERELEASE "" CACHE STRING "Prerelease suffix; empty for a stable build")
 set(PHSRADIO_VERSION_STRING "${PROJECT_VERSION}")
@@ -20,7 +20,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.6 REQUIRED COMPONENTS Widgets Multimedia Network)
+find_package(Qt6 6.6 REQUIRED COMPONENTS Widgets Multimedia Network OpenGL OpenGLWidgets)
 find_package(ICU REQUIRED COMPONENTS i18n uc data)
 
 add_library(MusicSearch STATIC music_search.h music_search.cpp)
@@ -63,6 +63,7 @@ endif()
 add_library(AeroWidgets STATIC
     aero_widgets.h aero_widgets.cpp aero_surface.h aero_surface.cpp
     aero_animation.h aero_animation.cpp meteor_effect.h meteor_effect.cpp
+    aquarium_entrance.h aquarium_entrance.cpp resources/entrance.qrc
     liquid_backdrop.h liquid_backdrop.cpp
     liquid_image_blur.h
     playlist_drawer.h playlist_drawer.cpp playback_dock.h playback_dock.cpp
@@ -76,7 +77,7 @@ add_library(AeroWidgets STATIC
     latest_video_frame.h
     glass_title_bar.h glass_title_bar.cpp
     resources/platforms.qrc resources/app.qrc)
-target_link_libraries(AeroWidgets PUBLIC Qt6::Widgets Qt6::Multimedia PRIVATE VideoFrameImages)
+target_link_libraries(AeroWidgets PUBLIC Qt6::Widgets Qt6::Multimedia Qt6::OpenGL Qt6::OpenGLWidgets PRIVATE VideoFrameImages)
 if(WIN32)
     target_link_libraries(AeroWidgets PRIVATE user32 d3d11 dxgi dwmapi runtimeobject ole32)
 endif()
@@ -137,8 +138,22 @@ endif()
 
 target_link_libraries(PHSRadio PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
 
+if(WIN32)
+    target_sources(PHSRadio PRIVATE gpu_preference.cpp)
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(AquariumEntrancePreview tests/aquarium_entrance_preview.cpp)
+    target_link_libraries(AquariumEntrancePreview PRIVATE AeroWidgets)
+    if(WIN32)
+        target_sources(AquariumEntrancePreview PRIVATE gpu_preference.cpp)
+    endif()
+    add_executable(AquariumLoginFlowTest tests/aquarium_login_flow_test.cpp
+        mock_music_provider.cpp platform_login_page.cpp kugou_api_client.cpp playlist_snapshot_provider.cpp
+        netease_api_client.cpp netease_music_provider.cpp gpu_preference.cpp)
+    target_compile_definitions(AquariumLoginFlowTest PRIVATE PHSRADIO_KUGOU_NETEASE=1)
+    target_link_libraries(AquariumLoginFlowTest PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network MusicSearch MusicLyrics PlaybackQueue CoverImages AeroWidgets UpdateWidgets crypt32)
     add_executable(NeteaseLibraryApiTest tests/netease_library_api_test.cpp)
     target_link_libraries(NeteaseLibraryApiTest PRIVATE Qt6::Gui Qt6::Network MusicSearch MusicLyrics crypt32)
     add_test(NAME netease_library_api COMMAND NeteaseLibraryApiTest)

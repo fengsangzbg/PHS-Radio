@@ -9,6 +9,7 @@
 #include "../main.cpp"
 #undef main
 #undef private
+#include "../meteor_effect.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -382,6 +383,50 @@ int main(int argc, char **argv)
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.filePath(QStringLiteral("settings/user")));
     QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, temporary.filePath(QStringLiteral("settings/system")));
     QSettings().clear();
+    if(const QString preview=qEnvironmentVariable("PHSRADIO_APPEARANCE_PREVIEW");!preview.isEmpty()) {
+        PlayerWindow visual({MusicPlatform::Kugou,MusicPlatform::NetEaseCloud},true,true);
+        visual.resize(1260,880);visual.show();visual.activateWindow();
+        visual.m_dock->setPinned(true);
+        visual.applyBackgroundTheme(BackgroundTheme());
+        waitForEvents(180);
+        check(visual.grab().save(preview+QStringLiteral("/water.png")),"Water preview must save.");
+        ThemePanel panel(visual.m_surface);
+        panel.setTheme(visual.m_surface->backgroundTheme());
+        panel.onThemeSelected=[&](const BackgroundTheme &theme){visual.applyBackgroundTheme(theme);};
+        panel.show();waitForEvents(180);
+        check(panel.testAttribute(Qt::WA_TranslucentBackground),"Theme dialog must retain native transparency.");
+        check(panel.grab().save(preview+QStringLiteral("/theme-glass.png")),"Theme dialog preview must save.");
+        for(auto *button:panel.findChildren<QPushButton *>())
+            if(button->text()==QStringLiteral("导入图片 / 动态背景")) {
+                const QPointF position(button->width()-12,button->height()/2.0);
+                QEnterEvent enter(position,position,QPointF(button->mapToGlobal(position.toPoint())));
+                QApplication::sendEvent(button,&enter);
+                QMouseEvent move(QEvent::MouseMove,position,QPointF(button->mapToGlobal(position.toPoint())),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+                QApplication::sendEvent(button,&move);
+                check(button->grab().save(preview+QStringLiteral("/hover-button.png")),"Tilted glass rim preview must save.");
+            }
+        auto *fire=panel.findChild<QPushButton *>(QStringLiteral("fireMeteorTheme"));
+        check(fire,"The night theme must be selectable from the theme dialog.");fire->click();
+        auto *meteor=dynamic_cast<PlaybackMeteor *>(visual.m_dock->findChild<QWidget *>(QStringLiteral("playbackMeteor")));
+        check(meteor&&meteor->style()==PlaybackMeteor::Style::Fire,"Selecting fire must update the actual dock effect.");
+        panel.hide();waitForEvents(150);
+        visual.m_dock->triggerPlaybackMeteor();waitForEvents(280);
+        check(visual.grab().save(preview+QStringLiteral("/fire.png")),"Night preview must save.");
+        QImage target(visual.m_surface->size()*visual.devicePixelRatioF(),QImage::Format_RGB32);
+        target.setDevicePixelRatio(visual.devicePixelRatioF());
+        QVector<qint64> costs;
+        for(int i=0;i<75;++i){
+            visual.m_surface->m_phase=2+i/60.0;
+            QElapsedTimer clock;clock.start();
+            {QPainter painter(&target);visual.m_surface->paintWater(painter,visual.m_surface->rect());}
+            costs.append(clock.nsecsElapsed());
+        }
+        std::sort(costs.begin(),costs.end());
+        qInfo("Fire background at %dx%d: median %.3f ms; p95 %.3f ms",target.width(),target.height(),costs[37]/1e6,costs[71]/1e6);
+        visual.applyBackgroundTheme(BackgroundTheme());
+        check(meteor->style()==PlaybackMeteor::Style::GreenLaser,"Leaving the night theme must restore the green laser.");
+        return 0;
+    }
     const QVector<Track> tracks{
         song(QStringLiteral("First local song"), writeWave(temporary.filePath(QStringLiteral("first.wav")), 1250, 220)),
         song(QStringLiteral("Second local song"), writeWave(temporary.filePath(QStringLiteral("second.wav")), 1250, 330))

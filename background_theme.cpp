@@ -82,7 +82,7 @@ BackgroundTheme loadBackgroundTheme(QSettings &settings)
 {
     BackgroundTheme result;
     const int kind = settings.value(QStringLiteral("appearance/backgroundKind"), 0).toInt();
-    if (kind >= 0 && kind <= static_cast<int>(BackgroundKind::WallpaperEngine))
+    if (kind >= 0 && kind <= static_cast<int>(BackgroundKind::FireMeteor))
         result.kind = static_cast<BackgroundKind>(kind);
     result.sourcePath = settings.value(QStringLiteral("appearance/backgroundPath")).toString();
     result.engineExecutable = settings.value(QStringLiteral("appearance/backgroundEngine")).toString();

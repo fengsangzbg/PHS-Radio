@@ -2,15 +2,15 @@
 
 <img src="resources/app_logo.svg" width="96" alt="PHS Radio 玻璃台风 P 标志">
 
-**实用且美观的 Frutiger Aero 播放器。v0.3.0 正式版支持酷狗与网易云独立扫码登录、歌单浏览与聚合搜索。**
+**实用且美观的 Frutiger Aero 播放器。v0.3.1 正式版支持酷狗与网易云独立扫码登录、歌单浏览与聚合搜索。**
 
 液态玻璃、水光、柔和发光与弹性回馈，让听歌界面也成为桌面的一部分。支持导入 **Wallpaper Engine 动态壁纸**，自定义背景、主题色和遮暗程度，从复古到明亮自由搭配。
 
-[下载 v0.3.0 正式版](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.3.0) · [最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest) · [反馈问题](https://github.com/fengsangzbg/PHS-Radio/issues)
+[下载 v0.3.1 正式版](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.3.1) · [最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest) · [反馈问题](https://github.com/fengsangzbg/PHS-Radio/issues)
 
-**已知问题：网易云播放仍不可用。** 当前实测登录、歌单导入和搜索可用，但播放可能对所有歌曲返回空音源。本版保留该功能供后续修复，不能将空音源一概视为会员或版权问题。酷狗的播放功能继续保留。
+酷狗与网易云均支持登录、歌单、搜索与播放。网易云播放已由用户实测确认恢复可用；具体歌曲的音源、音质与权限仍以平台返回为准。
 
-v0.3.0 新增双平台账号与歌单切换、聚合搜索来源图标，以及 Dock 音质菜单：酷狗和网易云分别保存标准／高品质／无损偏好。网易云的音质设置已接入请求，但受上述播放问题影响，尚不能完成实际试听验证。
+v0.3.1 新增水族箱 MP3 启动界面：点击 logo 打开平台登录，点击「完成登录」回到 MP3，再次点击 logo 经缩放与高清文字动画进入播放器。主题面板升级为透明玻璃，默认水光更清透，新增「火流星」夏夜夜空。Dock 播放激光固定亮起后约一秒熄灭，支持绿色与火焰配色；按钮边缘、文字裁切与交互虚线同步优化。
 
 ## 可以做什么
 
@@ -19,19 +19,19 @@ v0.3.0 新增双平台账号与歌单切换、聚合搜索来源图标，以及 
 - 首页每日推荐、跟随电脑时区的玻璃时钟、日期与年份。
 - 自动弹出的播放 Dock：顺序／随机播放、暂停、切歌、可拖动进度条、独立音乐音量／静音与固定按钮。「音质」菜单，可为酷狗、网易云分别选择标准、高品质、无损；切换时保留进度，实际音质以平台及账号权限为准。
 - 同步滚动歌词，以及带高清封面的旋转玻璃唱片。
-- 左侧滑出歌单、独立玻璃歌曲卡片、悬停高光、弹性按钮与多颗蓝色播放流星。
-- 导入图片、GIF、视频和 Wallpaper Engine 壁纸，自定义背景与配色，组合复古、明亮等风格。
+- 左侧滑出歌单、独立玻璃歌曲卡片、悬停高光、弹性按钮与固定闪现的分层播放激光。
+- 导入图片、GIF、视频和 Wallpaper Engine 壁纸，自定义背景与配色，组合复古、明亮等风格；内置默认水光与「火流星」主题。
 - 壁纸保持静音，音乐独立播放；窗口隐藏或不活跃时减少背景开销。
 - 跟随 Windows 默认音频设备切换，支持耳机与扬声器切换。
 - 标题栏“更新”检查新版本，下载校验后安装并自动重启，保留登录及主题设置。
 
-软件免费使用。音乐能否播放取决于对应平台接口返回的音源及账号权限；不同账号可能取得不同结果。第三方接口与官方 App 的返回不一定一致，取得音源不代表歌曲没有会员或地区限制。当前支持酷狗和网易云账号，QQ 音乐留待后续接入；网易云播放问题见上文。
+软件免费使用。音乐能否播放取决于对应平台接口返回的音源及账号权限；不同账号可能取得不同结果。第三方接口与官方 App 的返回不一定一致，取得音源不代表歌曲没有会员或地区限制。当前支持酷狗和网易云账号，QQ 音乐留待后续接入。
 
 ## 安装与使用
 
-1. 到 [v0.3.0 正式版发布页](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.3.0) 下载 Windows x64 完整包；也可选择[最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest)。
+1. 到 [v0.3.1 正式版发布页](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.3.1) 下载 Windows x64 完整包；也可选择[最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest)。
 2. **完整解压**后双击 `PHSRadio.exe`。保留 DLL、Qt 插件、`runtime`、`services` 等全部文件；无需另装 Qt、Node.js 或 npm。
-3. 在“平台连接”中分别选择酷狗或网易云，使用对应手机 App 扫码确认登录；两平台可同时保持登录。
+3. 启动时点击 MP3 上的 logo，在登录页选择酷狗或网易云并扫码；点击「完成登录」回到 MP3，再次点击 logo 进入播放器。进入后仍可通过“平台连接”管理账号，两平台可同时保持登录。
 4. 歌单会在后台逐步加载。未加载完整时可从歌单面板重试；双击歌曲即可播放。
 
 旧版用户先关闭播放器，再将新完整包解压到一个新文件夹，运行其中的 `PHSRadio.exe`；账号和主题设置仍保存在当前 Windows 用户下。无需再使用单独的设备验证测试补丁。
@@ -62,20 +62,20 @@ Dock 音量只控制软件内的音乐，不改变 Windows 主音量；背景继
 
 ## 构建
 
-需要 CMake 3.21+、C++17、Qt 6.6+（Widgets、Multimedia、Network）及 ICU。Windows 发布使用 MSYS2 UCRT64：
+需要 CMake 3.21+、C++17、Qt 6.6+（Widgets、Multimedia、Network、OpenGL、OpenGLWidgets）及 ICU。Windows 发布使用 MSYS2 UCRT64：
 
 ```powershell
 cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPHSRADIO_KUGOU_ONLY=OFF
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.3.0-beta.1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.3.1
 ```
 
 本机服务源码与依赖锁位于 `services/kugou` 和 `services/netease`，开发或重新打包前分别运行 `npm ci --prefix services/kugou --omit=dev --ignore-scripts` 和 `npm ci --prefix services/netease --omit=dev --ignore-scripts`。服务只监听本机端口 3737 和 3738；完整包已包含服务和 Node.js。
 
 `PHSRADIO_KUGOU_ONLY=OFF` 生成酷狗、网易云双平台预览版；`ON` 保留仅酷狗构建用于兼容验证。未开放平台的开发代码保留在仓库，测试不会使用真实账号。更多实现细节见 [开发说明](docs/development.md)。
 
-当前开发构建与打包默认为 `0.3.0-beta.1`。搬迁过的项目应使用新构建目录，并显式配置 -DPHSRADIO_PRERELEASE=beta.1 和 -DPHSRADIO_KUGOU_ONLY=OFF。构建正式版时清空 PHSRADIO_PRERELEASE 后缀。Beta 版的更新检查仍查询正式 Release。
+当前开发构建与打包默认为 `0.3.1` 正式版，`PHSRADIO_PRERELEASE` 为空，`PHSRADIO_KUGOU_ONLY=OFF`。搬迁过的项目应使用新构建目录。Beta 版的更新检查也查询正式 Release。
 
 ## 许可与依赖源码
 

@@ -42,9 +42,9 @@ void paintGlassBase(QPainter &painter, const QRectF &bounds, const QColor &reque
     QPainterPath silhouette;
     silhouette.addRoundedRect(bounds, radius, radius);
     QLinearGradient body(bounds.topLeft(), bounds.bottomLeft());
-    body.setColorAt(0, QColor(5, 9, 13, 45));
-    body.setColorAt(.48, QColor(4, 8, 12, 52));
-    body.setColorAt(1, QColor(4, 7, 11, 62));
+    body.setColorAt(0, QColor(16, 38, 46, 24));
+    body.setColorAt(.48, QColor(4, 20, 29, 35));
+    body.setColorAt(1, QColor(4, 16, 26, 46));
     painter.fillPath(silhouette, body);
     painter.save();
     painter.setClipPath(silhouette, Qt::IntersectClip);
@@ -53,7 +53,7 @@ void paintGlassBase(QPainter &painter, const QRectF &bounds, const QColor &reque
     tint.setAlpha(7);
     painter.fillRect(bounds, tint);
     QLinearGradient gloss(bounds.topLeft(), bounds.bottomLeft());
-    gloss.setColorAt(0, QColor(255, 255, 255, 10));
+    gloss.setColorAt(0, QColor(240, 255, 255, 17));
     gloss.setColorAt(.44, QColor(255, 255, 255, 2));
     gloss.setColorAt(1, QColor(255, 255, 255, 0));
     painter.fillRect(bounds, gloss);
@@ -238,7 +238,8 @@ void JellyButton::mouseMoveEvent(QMouseEvent *event)
 
 const QPixmap &JellyButton::glassTexture(int state)
 {
-    const qreal dpr = devicePixelRatioF();
+    // Supersample the cached rim so fractional hover rotations stay smooth.
+    const qreal dpr = std::max(2.0, devicePixelRatioF());
     if (m_cachedTextureSize != size() || !qFuzzyCompare(m_cachedTextureDpr, dpr)) {
         m_glassTextures = {};
         m_cachedTextureSize = size();
@@ -271,9 +272,13 @@ void JellyButton::paintEvent(QPaintEvent *event)
     Q_UNUSED(event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::TextAntialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     const QPointF center = QRectF(rect()).center();
     painter.translate(center + QPointF(m_pointer.x() * 1.1, m_pointer.y() * .7 + m_pressure * 1.5));
-    painter.rotate(m_hovered ? m_pointer.x() * 1.6 : 0);
+    // Limit edge lift in pixels: a long button must not rotate out of its widget.
+    const qreal tilt = std::min(1.6, qRadiansToDegrees(std::atan2(2.0, width() * .5)));
+    painter.rotate(m_hovered ? m_pointer.x() * tilt : 0);
     painter.scale(1 + m_pressure * .11, 1 - m_pressure * .20);
     painter.translate(-center);
     const qreal horizontalMargin = std::max(6.0, width() * .065);
@@ -285,7 +290,8 @@ void JellyButton::paintEvent(QPaintEvent *event)
     const QColor ink(QStringLiteral("#eaf3fa"));
     const bool hasGlyph = m_glyph != Glyph::None || !icon().isNull();
     const qreal innerPadding = text().isEmpty() ? 2 : 6;
-    const QRectF content = glass.adjusted(innerPadding, 4, -innerPadding, -4);
+    // Compact caption controls need the full glass height for CJK ascenders.
+    const QRectF content = glass.adjusted(innerPadding, 0, -innerPadding, 0);
     const qreal glyphSize = hasGlyph ? std::max(0.0, std::min({28.0, content.width(), glass.height() * .56})) : 0;
     const qreal gap = hasGlyph && !text().isEmpty() ? 7 : 0;
     const qreal availableText = std::max(0.0, content.width() - glyphSize - gap);
@@ -305,11 +311,6 @@ void JellyButton::paintEvent(QPaintEvent *event)
     painter.setPen(ink);
     painter.drawText(QRectF(left, content.top(), labelWidth + 1, content.height()),
                      Qt::AlignVCenter | Qt::AlignLeft | Qt::TextShowMnemonic, label);
-    if (hasFocus()) {
-        painter.setPen(QPen(QColor(234, 243, 250, 100), .9, Qt::DashLine));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRoundedRect(glass.adjusted(4, 4, -4, -4), glass.height() * .35, glass.height() * .35);
-    }
 }
 
 void JellyButton::paintGlyph(QPainter &painter, const QRectF &bounds, const QColor &ink) const

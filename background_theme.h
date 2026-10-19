@@ -6,7 +6,8 @@
 
 class QSettings;
 
-enum class BackgroundKind { Liquid, Image, Video, WallpaperEngine };
+// Append new built-ins to preserve stored values for imported backgrounds.
+enum class BackgroundKind { Liquid, Image, Video, WallpaperEngine, FireMeteor };
 
 struct BackgroundTheme {
     BackgroundKind kind = BackgroundKind::Liquid;

@@ -1,6 +1,7 @@
 #include "theme_panel.h"
 #include "aero_widgets.h"
 #include "wallpaper_engine_capture.h"
+#include "liquid_backdrop.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -14,6 +15,13 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
+#include <QScrollArea>
+#include <QScreen>
+#include <QPainter>
+#include <QTimer>
+#include <QHideEvent>
+#include <QMouseEvent>
+#include <QWindow>
 
 ThemePanel::ThemePanel(QWidget *parent)
     : QDialog(parent), m_wallpapers(new QComboBox(this)), m_current(new QLabel(this)),
@@ -21,12 +29,27 @@ ThemePanel::ThemePanel(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("背景主题"));
     setObjectName(QStringLiteral("themePanel"));
+    setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground);
+    setAutoFillBackground(false);
     setMinimumWidth(510);
     setModal(true);
-    auto *layout = new QVBoxLayout(this);
+    auto *outer = new QVBoxLayout(this);
+    outer->setContentsMargins(6,6,6,6);
+    auto *scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setStyleSheet(QStringLiteral("QScrollArea, QScrollArea > QWidget > QWidget { background:transparent; border:0; } QScrollBar:vertical {width:6px;background:transparent;} QScrollBar::handle:vertical {background:rgba(200,245,255,100);min-height:32px;border-radius:3px;}"));
+    scroll->viewport()->setAutoFillBackground(false);
+    auto *content = new QWidget(scroll);
+    content->setAutoFillBackground(false);
+    scroll->setWidget(content);outer->addWidget(scroll);
+    auto *layout = new QVBoxLayout(content);
     layout->setContentsMargins(24, 22, 24, 22);
     layout->setSpacing(14);
     auto *heading = new QLabel(QStringLiteral("让音乐拥有自己的背景"), this);
+    heading->setAttribute(Qt::WA_TransparentForMouseEvents);
     heading->setStyleSheet(QStringLiteral("font-size: 20px; font-weight: 600;"));
     layout->addWidget(heading);
     m_current->setWordWrap(true);
@@ -34,12 +57,25 @@ ThemePanel::ThemePanel(QWidget *parent)
     layout->addWidget(m_current);
     auto *local = new QHBoxLayout;
     auto *builtIn = new JellyButton(QStringLiteral("默认水光"), this);
+    m_waterTheme = builtIn;
+    m_fireTheme = new JellyButton(QStringLiteral("火流星"), this);
+    m_fireTheme->setObjectName(QStringLiteral("fireMeteorTheme"));
+    m_fireTheme->setToolTip(QStringLiteral("盛夏的夜晚，炽热流星与余烬划过星空；播放时 Dock 同步燃起火焰流星。"));
+    for(auto *button : {m_waterTheme,m_fireTheme}) button->setCheckable(true);
     auto *import = new JellyButton(QStringLiteral("导入图片 / 动态背景"), this);
     local->addWidget(builtIn);
+    local->addWidget(m_fireTheme);
     local->addWidget(import, 1);
     layout->addLayout(local);
     connect(builtIn, &QPushButton::clicked, this, [this] {
         BackgroundTheme selected;
+        selected.dimming = m_theme.dimming;
+        selectTheme(selected);
+    });
+    connect(m_fireTheme, &QPushButton::clicked, this, [this] {
+        BackgroundTheme selected;
+        selected.kind = BackgroundKind::FireMeteor;
+        selected.displayName = QStringLiteral("火流星 · 盛夏之夜");
         selected.dimming = m_theme.dimming;
         selectTheme(selected);
     });
@@ -167,20 +203,52 @@ ThemePanel::ThemePanel(QWidget *parent)
     layout->addWidget(done, 0, Qt::AlignRight);
     connect(done, &QPushButton::clicked, this, &QDialog::accept);
     setStyleSheet(QStringLiteral(
-        "QDialog#themePanel { background: #0b111a; color: #edf4fc; }"
+        "QDialog#themePanel { background: transparent; color: #edf4fc; }"
         "QLabel { background: transparent; color: #d4e0ed; }"
-        "QComboBox { background: #15202e; color: #edf4fc; border: 1px solid #304357; border-radius: 8px; padding: 9px; }"
+        "QComboBox { background: rgba(10,30,40,110); color: #edf4fc; border: 1px solid rgba(204,245,255,65); border-radius: 12px; padding: 9px; }"
         "QComboBox QAbstractItemView { background: #15202e; color: #edf4fc; selection-background-color: #24475c; }"
         "QSlider::groove:horizontal { background: #25394b; height: 5px; border-radius: 2px; }"
         "QSlider::handle:horizontal { background: #bce5f7; width: 15px; margin: -5px 0; border-radius: 7px; }"));
     refreshWallpapers();
     updateCurrent();
+    m_glassRefresh = new QTimer(this);
+    m_glassRefresh->setInterval(33);
+    connect(m_glassRefresh,&QTimer::timeout,this,[this]{update();});
+    const QRect available = screen()->availableGeometry();
+    resize(qMin(680,available.width()-48),qMin(790,available.height()-64));
 }
 
 void ThemePanel::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
+    m_glassRefresh->start();
     updateEngineFrameRate();
+}
+
+void ThemePanel::hideEvent(QHideEvent *event)
+{
+    m_glassRefresh->stop();
+    QDialog::hideEvent(event);
+}
+
+void ThemePanel::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    Liquid::paintBackdrop(painter,this,30);
+    const QRectF glass=QRectF(rect()).adjusted(2,2,-2,-2);
+    // Transparent smoked glass keeps the live background visible and text legible.
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(5,20,30,112));
+    painter.drawRoundedRect(glass,30,30);
+    Aero::paintGlass(painter,glass,Aero::defaultAccent(),30);
+}
+
+void ThemePanel::mousePressEvent(QMouseEvent *event)
+{
+    if(event->button()==Qt::LeftButton && event->position().y()<64 && windowHandle())
+        windowHandle()->startSystemMove();
+    QDialog::mousePressEvent(event);
 }
 
 QString ThemePanel::engineExecutable() const
@@ -249,7 +317,10 @@ void ThemePanel::refreshWallpapers(const QStringList &steamRoots)
 
 void ThemePanel::updateCurrent()
 {
+    m_waterTheme->setChecked(m_theme.kind == BackgroundKind::Liquid);
+    m_fireTheme->setChecked(m_theme.kind == BackgroundKind::FireMeteor);
     const QString name = m_theme.kind == BackgroundKind::Liquid ? QStringLiteral("默认水光")
+        : m_theme.kind == BackgroundKind::FireMeteor ? QStringLiteral("火流星 · 盛夏之夜")
         : m_theme.displayName.isEmpty() ? QFileInfo(m_theme.sourcePath).fileName() : m_theme.displayName;
     m_current->setText(QStringLiteral("当前背景：%1").arg(name));
     m_current->setToolTip(m_theme.sourcePath);

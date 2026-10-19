@@ -1,6 +1,8 @@
 #include "mock_music_provider.h"
 #include "kugou_api_client.h"
 #include "platform_login_page.h"
+#include "aquarium_entrance.h"
+#include <QVariantAnimation>
 #include "playlist_snapshot_provider.h"
 #include "playlist_drawer.h"
 #include "aero_surface.h"
@@ -153,6 +155,14 @@ QVector<MusicPlatform> loadSelectedPlatforms(QSettings &settings)
 }
 
 }
+
+class EntranceReveal final : public QWidget {
+public:
+    float alpha=1;
+    explicit EntranceReveal(QWidget *parent):QWidget(parent){setAttribute(Qt::WA_TransparentForMouseEvents);}
+protected:
+    void paintEvent(QPaintEvent *)override{QPainter p(this);p.fillRect(rect(),QColor(251,254,255,qRound(alpha*255)));}
+};
 
 class PlayerWindow final : public QMainWindow {
 public:
@@ -683,6 +693,7 @@ public:
         connect(platformsButton, &QPushButton::clicked, this, [this] {
             m_catalogPanel->dismiss();
             m_loginPage->setSelectedPlatforms(m_enabledPlatforms);
+            m_loginPage->showConnectionForm(false);
             m_pages->setCurrentWidget(m_loginPage);
         });
 
@@ -743,6 +754,7 @@ public:
                 refresh();
             }
             startLibrarySync();
+            updateEntranceAccount();
         };
 
         m_neteaseApi.onStatusChanged = [this](const QString &status) {
@@ -798,6 +810,7 @@ public:
             }
             if (!connected && m_pages->currentWidget() == m_playerPage) refresh(true);
             requestRecommendations(MusicPlatform::NetEaseCloud, true);
+            updateEntranceAccount();
         };
         m_neteaseApi.onPlaylistsReady = [this](const QVector<Playlist> &) {
             ++m_neteaseLibraryRevision;
@@ -838,6 +851,7 @@ public:
         } else {
             m_pages->setCurrentWidget(m_loginPage);
         }
+        if(!smokeMode) startEntrance();
         if (!smokeMode && allowedPlatforms.contains(MusicPlatform::Kugou))
             m_kugouApi.restoreSession();
         if (!smokeMode && allowedPlatforms.contains(MusicPlatform::NetEaseCloud))
@@ -1049,6 +1063,7 @@ private:
         if (!selected.contains(platform))
             selected.push_back(platform);
         m_loginPage->setSelectedPlatforms(selected);
+        m_loginPage->showConnectionForm(false);
         m_pages->setCurrentWidget(m_loginPage);
         if (platform == MusicPlatform::Kugou)
             m_kugouApi.startQrLogin();
@@ -1137,7 +1152,7 @@ private:
     void chooseBackgroundTheme()
     {
         m_dock->setInteractionHeld(true);
-        ThemePanel panel(this);
+        ThemePanel panel(m_surface);
         panel.setTheme(m_surface->backgroundTheme());
         panel.setWallpaperStatus(m_wallpaperCapture->statusText());
         panel.diagnosticsProvider = [this] { return m_wallpaperCapture->diagnosticReport(); };
@@ -1162,6 +1177,7 @@ private:
             statusBar()->showMessage(error, 10000);
             return;
         }
+        m_dock->setFireMeteorTheme(theme.kind == BackgroundKind::FireMeteor);
         if (!sameEngineSource)
             m_wallpaperCapture->stop();
         if (theme.kind == BackgroundKind::WallpaperEngine && (!sameEngineSource || !m_wallpaperCapture->isRequested()))
@@ -1621,6 +1637,35 @@ private:
         updateCatalogSearchHint();
     }
 
+    void startEntrance()
+    {
+        m_entranceJourney=true;
+        m_loginPage->enableEntrance(m_loginTitleBar);
+        m_loginPage->showEntranceWelcome(false);
+        m_loginPage->onEntranceFinished=[this]{
+            m_entranceJourney=false;
+            m_pages->setCurrentWidget(m_playerPage);
+            showHomePage();statusBar()->show();
+            auto *veil=new EntranceReveal(m_playerPage);
+            veil->setGeometry(m_playerPage->rect());veil->show();veil->raise();
+            auto *fade=new QVariantAnimation(veil);
+            fade->setDuration(300);fade->setStartValue(1.f);fade->setEndValue(0.f);
+            connect(fade,&QVariantAnimation::valueChanged,veil,[veil](const QVariant &v){veil->alpha=v.toFloat();veil->update();});
+            connect(fade,&QVariantAnimation::finished,veil,&QObject::deleteLater);
+            fade->start();
+        };
+        m_pages->setCurrentWidget(m_loginPage);statusBar()->hide();
+    }
+
+    void updateEntranceAccount()
+    {
+        const bool connected=m_kugouAccountConnected||m_neteaseApi.isLoggedIn();
+        // Account restoration/login must not navigate or arm the startup MP3.
+        // Only the user's completion action returns to the ready welcome screen.
+        if(!m_entranceJourney)
+            m_loginPage->setEntranceReady(connected);
+    }
+
     void completeSetup()
     {
         const QVector<MusicPlatform> selected = m_loginPage->selectedPlatforms();
@@ -1636,7 +1681,11 @@ private:
         settings.setValue(QStringLiteral("demoMode"), !m_kugouAccountConnected && !m_neteaseApi.isLoggedIn());
 
         configurePlatforms(selected);
+        if(m_entranceJourney) {
+            refresh();m_loginPage->showEntranceWelcome(true);statusBar()->hide();return;
+        }
         m_pages->setCurrentWidget(m_playerPage);
+        statusBar()->show();
         showHomePage();
         statusBar()->showMessage((m_kugouAccountConnected || m_neteaseApi.isLoggedIn())
             ? QStringLiteral("平台账号已连接，正在显示账号音乐库。")
@@ -2524,6 +2573,7 @@ private:
     NeteaseApiClient m_neteaseApi;
     QStackedWidget *m_pages = nullptr;
     PlatformLoginPage *m_loginPage = nullptr;
+    bool m_entranceJourney = false;
     QWidget *m_playerPage = nullptr;
     AeroSurface *m_surface = nullptr;
     AeroPanel *m_toolbarPanel = nullptr;

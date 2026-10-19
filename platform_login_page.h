@@ -6,6 +6,7 @@
 #include <QPair>
 #include <QVector>
 #include <QWidget>
+#include <functional>
 
 class QCheckBox;
 class QPushButton;
@@ -26,6 +27,23 @@ public:
     void setNeteaseStatus(const QString &status);
     void setNeteaseQr(const QImage &image);
     void clearNeteaseQr();
+    void enableEntrance(QWidget *titleBar);
+    void showEntranceWelcome(bool ready);
+    void showConnectionForm(bool startupJourney = false);
+    void setEntranceReady(bool ready);
+    bool entranceLoginVisible() const;
+    class AquariumEntrance *entrance() const { return m_entrance; }
+    std::function<void()> onEntranceFinished;
+
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
+private:
+    void arrangeEntrance();
+    class AquariumEntrance *m_entrance = nullptr;
+    class QScrollArea *m_formScroller = nullptr;
+    QWidget *m_formHost = nullptr;
+    QWidget *m_entranceTitleBar = nullptr;
 
 private:
     void updateSelection();

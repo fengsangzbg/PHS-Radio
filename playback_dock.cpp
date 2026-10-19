@@ -409,6 +409,11 @@ void PlaybackDock::setPlaying(bool playing)
     updatePlayButton();
 }
 
+void PlaybackDock::setFireMeteorTheme(bool enabled)
+{
+    m_meteor->setStyle(enabled ? PlaybackMeteor::Style::Fire : PlaybackMeteor::Style::GreenLaser);
+}
+
 void PlaybackDock::triggerPlaybackMeteor()
 {
     setExpanded(true);

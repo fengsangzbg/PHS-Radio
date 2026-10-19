@@ -430,7 +430,7 @@ void verifyDestroyedWindowDropsResponse(const Fixtures &fixtures)
 {
     const auto kugou = std::make_shared<Requests>();
     const auto qq = std::make_shared<Requests>();
-    auto window = std::make_unique<PlayerWindow>(QVector<MusicPlatform>{MusicPlatform::QQMusic}, true);
+    auto window = std::make_unique<PlayerWindow>(QVector<MusicPlatform>{MusicPlatform::QQMusic}, true, true);
     installProviders(*window, fixtures, kugou, qq);
     const int pending = beginSearch(*window, kugou, QStringLiteral("window lifetime"));
     QPointer<PlayerWindow> lifetime(window.get());
@@ -519,7 +519,7 @@ int main(int argc, char **argv)
     Fixtures fixtures;
     const auto kugou = std::make_shared<Requests>();
     const auto qq = std::make_shared<Requests>();
-    PlayerWindow window({MusicPlatform::QQMusic}, true);
+    PlayerWindow window({MusicPlatform::QQMusic}, true, true);
     installProviders(window, fixtures, kugou, qq);
     verifyOutsideTracksStaleResultsAndPagination(window, fixtures, kugou);
     verifyDismissalAndFixedCatalogRouting(window, fixtures, kugou, qq);

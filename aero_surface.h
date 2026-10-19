@@ -70,6 +70,7 @@ private:
     quint64 m_revision = 0;
     mutable QImage m_waterFrame;
     mutable QImage m_waterTexture;
+    mutable QImage m_nightSky;
     mutable qreal m_waterFramePhase = -1;
     mutable quint64 m_waterFrameRevision = 0;
     BackgroundTheme m_background;
@@ -102,6 +103,7 @@ private:
     QVector<QPointer<QWidget>> m_backgroundBlurConsumers;
     void paintWaterFrame(QPainter &painter, const QRectF &bounds,
                          const QPointF &worldOffset) const;
+    void paintFireNight(QPainter &painter) const;
     void updateAnimationState();
     void scheduleBackgroundActivitySync();
     void updateDisplayRate();

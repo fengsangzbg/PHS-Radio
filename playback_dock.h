@@ -38,6 +38,7 @@ public:
     bool isShuffle() const;
     void updatePointer(const QPoint &hostPosition, bool insideWindow);
     void triggerPlaybackMeteor();
+    void setFireMeteorTheme(bool enabled);
 
     QSlider *progressSlider() const;
     QSlider *volumeSlider() const;

@@ -88,6 +88,11 @@ int main(int argc, char **argv)
     check(restored.kind == selected.kind && restored.sourcePath == selected.sourcePath
               && restored.dimming == 54 && restored.engineExecutable == selected.engineExecutable,
           "The selected theme and readability level must survive a settings round trip.");
+    selected = BackgroundTheme();
+    selected.kind = BackgroundKind::FireMeteor;
+    saveBackgroundTheme(settings, selected);
+    check(loadBackgroundTheme(settings).kind == BackgroundKind::FireMeteor,
+          "The built-in summer meteor theme must persist without requiring a source file.");
     settings.setValue(QStringLiteral("appearance/backgroundKind"), 99);
     settings.setValue(QStringLiteral("appearance/backgroundDimming"), 999);
     const auto invalid = loadBackgroundTheme(settings);

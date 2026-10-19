@@ -1,6 +1,9 @@
 #include "platform_login_page.h"
 #include "aero_widgets.h"
 #include "release_config.h"
+#include "aquarium_entrance.h"
+#include <QScrollArea>
+#include <QResizeEvent>
 
 #include <QCheckBox>
 #include <QFrame>
@@ -198,3 +201,58 @@ void PlatformLoginPage::updateSelection()
     m_selectionCount->setText(QStringLiteral("已选择 %1 / %2 个平台").arg(count).arg(m_options.size()));
     m_continueButton->setEnabled(count >= 1 && count <= m_options.size());
 }
+
+void PlatformLoginPage::enableEntrance(QWidget *titleBar)
+{
+    if(m_entrance)return;
+    m_entranceTitleBar=titleBar;
+    auto *formLayout=layout();
+    if(titleBar){formLayout->removeWidget(titleBar);titleBar->setParent(this);}
+    m_formHost=new QWidget(this);
+    // QWidget::setLayout transfers an existing layout from its old widget.
+    m_formHost->setLayout(formLayout);
+    formLayout->setContentsMargins(26,22,26,24);
+    m_entrance=new AquariumEntrance(this);
+    m_entrance->lower();
+    m_formScroller=new QScrollArea(this);
+    m_formScroller->setFrameShape(QFrame::NoFrame);
+    m_formScroller->setWidgetResizable(true);
+    m_formScroller->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_formScroller->setStyleSheet(QStringLiteral("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; } QScrollBar:vertical { background: transparent; width: 6px; } QScrollBar::handle:vertical {background: rgba(205,246,255,100); min-height: 30px; border-radius: 3px;}"));
+    m_formScroller->viewport()->setAutoFillBackground(false);
+    m_formScroller->setWidget(m_formHost);
+    m_formScroller->hide();
+    m_entrance->onLoginRequested=[this]{showConnectionForm(true);};
+    m_entrance->onEntryFinished=[this]{if(onEntranceFinished)onEntranceFinished();};
+    m_entrance->onRendererFailed=[this](const QString &){showConnectionForm(true);};
+    arrangeEntrance();
+    if(titleBar)titleBar->raise();
+}
+void PlatformLoginPage::arrangeEntrance()
+{
+    if(!m_entrance)return;
+    m_entrance->setGeometry(rect());
+    if(m_entranceTitleBar)m_entranceTitleBar->setGeometry(16,8,qMax(1,width()-32),38);
+    const int panelWidth=qMax(1,qMin(width()-60,qRound(height()*.94)));
+    const int panelHeight=qMax(1,qRound(height()*.76));
+    m_formScroller->setGeometry((width()-panelWidth)/2,(height()-panelHeight)/2,panelWidth,panelHeight);
+}
+void PlatformLoginPage::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);arrangeEntrance();
+}
+void PlatformLoginPage::showEntranceWelcome(bool ready)
+{
+    if(!m_entrance)return;
+    m_formScroller->hide();m_entrance->showWelcome(ready);
+}
+void PlatformLoginPage::showConnectionForm(bool startupJourney)
+{
+    if(!m_entrance)return;
+    m_continueButton->setText(startupJourney?QStringLiteral("完成登录"):QStringLiteral("返回播放器"));
+    m_formScroller->show();m_formScroller->raise();
+    if(m_entranceTitleBar)m_entranceTitleBar->raise();
+    m_entrance->showLogin();
+}
+void PlatformLoginPage::setEntranceReady(bool ready){if(m_entrance)m_entrance->setReady(ready);}
+bool PlatformLoginPage::entranceLoginVisible()const{return m_entrance&&m_formScroller&&!m_formScroller->isHidden();}

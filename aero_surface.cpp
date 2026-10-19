@@ -22,6 +22,7 @@
 #include <QThreadPool>
 #include <QVideoFrame>
 #include <QVideoSink>
+#include <QtMath>
 #include <algorithm>
 #include <cmath>
 
@@ -120,7 +121,8 @@ bool AeroSurface::setBackground(const BackgroundTheme &theme, QString *error)
             *error = message;
         return false;
     };
-    if (theme.kind != BackgroundKind::Liquid && !QFileInfo(theme.sourcePath).isFile())
+    if (theme.kind != BackgroundKind::Liquid && theme.kind != BackgroundKind::FireMeteor
+        && !QFileInfo(theme.sourcePath).isFile())
         return fail(QStringLiteral("背景文件已移动或不存在，请重新选择。"));
     const bool sameSource = m_background.kind == theme.kind && m_background.sourcePath == theme.sourcePath;
     if (sameSource && !m_backgroundFailed) {
@@ -218,7 +220,8 @@ BackgroundTheme AeroSurface::backgroundTheme() const { return m_background; }
 
 void AeroSurface::setBackgroundFrame(const QImage &frame)
 {
-    if (frame.isNull() || m_background.kind == BackgroundKind::Liquid)
+    if (frame.isNull() || m_background.kind == BackgroundKind::Liquid
+        || m_background.kind == BackgroundKind::FireMeteor)
         return;
     m_backgroundBlurPresentTimer->stop();
     // QImage's implicit sharing retains the original pixels without copying or
@@ -305,7 +308,8 @@ void AeroSurface::ensureBackgroundTexture() const
 bool AeroSurface::paintCustomBackground(QPainter &painter, const QRectF &bounds,
                                        const QPointF &worldOffset) const
 {
-    if (m_background.kind == BackgroundKind::Liquid || m_backgroundFrame.isNull() || m_backgroundFailed)
+    if (m_background.kind == BackgroundKind::Liquid || m_background.kind == BackgroundKind::FireMeteor
+        || m_backgroundFrame.isNull() || m_backgroundFailed)
         return false;
     ensureBackgroundTexture();
     const qreal dpr = devicePixelRatioF();
@@ -329,7 +333,8 @@ void AeroSurface::paintBlurredBackground(QPainter &painter, const QRectF &bounds
 {
     if (bounds.isEmpty() || size().isEmpty())
         return;
-    if (m_background.kind == BackgroundKind::Liquid || m_backgroundFrame.isNull() || m_backgroundFailed) {
+    if (m_background.kind == BackgroundKind::Liquid || m_background.kind == BackgroundKind::FireMeteor
+        || m_backgroundFrame.isNull() || m_backgroundFailed) {
         paintWater(painter, bounds, worldOffset);
         return;
     }
@@ -449,33 +454,37 @@ void AeroSurface::paintWater(QPainter &painter, const QRectF &bounds,
         return;
     if (paintCustomBackground(painter, bounds, worldOffset))
         return;
-    // Soft fields need neither device-resolution rasterization nor 144 full
-    // gradient renders per second. UI motion remains at the screen's refresh
-    // rate, while all cells sample a shared half-resolution 30 Hz water frame.
-    constexpr qreal scale = .5;
+    // All glass consumers share one frame; meteor streaks use native pixels and
+    // screen cadence, while slow water fields retain their bounded update cost.
+    const bool fire = m_background.kind == BackgroundKind::FireMeteor;
+    const qreal scale = fire ? devicePixelRatioF() : .75;
     const QSize frameSize(std::max(1, int(std::ceil(width() * scale))),
                           std::max(1, int(std::ceil(height() * scale))));
-    const qreal framePhase = std::floor(m_phase * 30.0) / 30.0;
+    const qreal cadence = fire ? Aero::displayRefreshRate(this) : 30.0;
+    const qreal framePhase = std::floor(m_phase * cadence) / cadence;
     if (m_waterFrame.size() != frameSize || m_waterFramePhase != framePhase
         || m_waterFrameRevision != m_revision) {
         if (m_waterFrame.size() != frameSize)
             m_waterFrame = QImage(frameSize, QImage::Format_ARGB32_Premultiplied);
         QPainter framePainter(&m_waterFrame);
         framePainter.scale(scale, scale);
-        paintWaterFrame(framePainter, rect(), {});
+        if(fire) paintFireNight(framePainter);
+        else paintWaterFrame(framePainter, rect(), {});
         m_waterFramePhase = framePhase;
         m_waterFrameRevision = m_revision;
         framePainter.end();
         // Upsample once per water frame, not once for every table cell/panel.
         // Static row transforms can then use inexpensive unscaled image copies.
-        m_waterTexture = m_waterFrame.scaled(size(), Qt::IgnoreAspectRatio,
-                                            Qt::SmoothTransformation);
+        m_waterTexture = fire ? m_waterFrame : m_waterFrame.scaled(size(), Qt::IgnoreAspectRatio,
+                                                                  Qt::SmoothTransformation);
     }
     painter.save();
     painter.setClipRect(bounds, Qt::IntersectClip);
     painter.fillRect(bounds, QColor(7, 10, 15));
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    painter.drawImage(bounds, m_waterTexture, bounds.translated(worldOffset));
+    const QRectF source = bounds.translated(worldOffset);
+    painter.drawImage(bounds, m_waterTexture, fire
+        ? QRectF(source.topLeft()*scale,source.size()*scale) : source);
     painter.restore();
 }
 
@@ -489,15 +498,19 @@ void AeroSurface::paintWaterFrame(QPainter &painter, const QRectF &bounds,
     painter.translate(-worldOffset);
     const QRectF worldBounds = bounds.translated(worldOffset);
     const qreal w = std::max(1, width()), h = std::max(1, height());
-    painter.fillRect(worldBounds, QColor(7, 10, 15));
+    QLinearGradient depth(0,0,w,h);
+    depth.setColorAt(0,QColor(12,63,78));
+    depth.setColorAt(.48,QColor(8,41,59));
+    depth.setColorAt(1,QColor(8,26,47));
+    painter.fillRect(worldBounds, depth);
 
     // Broad, dim fields and slow folds give depth without drawing literal bubbles.
     QRadialGradient cyan(QPointF(w * (.19 + .07 * std::sin(m_phase * .13)),
                                 h * (.34 + .10 * std::cos(m_phase * .11))), w * .65);
     QColor glow = m_accent;
-    glow.setAlpha(39);
+    glow.setAlpha(88);
     cyan.setColorAt(0, glow);
-    glow.setAlpha(15);
+    glow.setAlpha(30);
     cyan.setColorAt(.35, glow);
     glow.setAlpha(0);
     cyan.setColorAt(1, glow);
@@ -505,26 +518,116 @@ void AeroSurface::paintWaterFrame(QPainter &painter, const QRectF &bounds,
 
     QRadialGradient blue(QPointF(w * (.81 + .06 * std::cos(m_phase * .09)),
                                 h * (.72 + .09 * std::sin(m_phase * .12))), w * .60);
-    blue.setColorAt(0, QColor(70, 112, 194, 28));
-    blue.setColorAt(.40, QColor(40, 94, 147, 10));
+    blue.setColorAt(0, QColor(44, 139, 217, 65));
+    blue.setColorAt(.40, QColor(40, 124, 172, 20));
     blue.setColorAt(1, QColor(40, 94, 147, 0));
     painter.fillRect(worldBounds, blue);
     painter.setRenderHint(QPainter::Antialiasing);
-    for (int fold = 0; fold < 3; ++fold) {
+    for (int fold = 0; fold < 6; ++fold) {
         const qreal phase = m_phase * (.14 + fold * .018) + fold * 1.7;
-        const qreal y = h * (.25 + fold * .24) + std::sin(phase) * h * .055;
+        const qreal y = h * (.12 + fold * .16) + std::sin(phase) * h * .055;
         QPainterPath wave;
         wave.moveTo(-w * .18, y + h * .10);
         wave.cubicTo(w * .17, y - h * (.20 + std::sin(phase) * .025),
                      w * .58, y + h * .20, w * 1.15, y - h * .13);
         QColor haze = m_accent;
-        haze.setAlpha(6);
-        painter.setPen(QPen(haze, 24 + fold * 8));
+        haze.setAlpha(5);
+        painter.setPen(QPen(haze, 3 + fold * .4));
         painter.drawPath(wave);
-        painter.setPen(QPen(QColor(120, 205, 229, 12), 1.1));
+        QLinearGradient caustic(0,y,w,y);
+        caustic.setColorAt(0,QColor(136,248,247,0));
+        caustic.setColorAt(.28,QColor(157,255,248,fold%2 ? 55 : 90));
+        caustic.setColorAt(.65,QColor(113,229,255,28));
+        caustic.setColorAt(1,QColor(100,218,255,0));
+        painter.setPen(QPen(QBrush(caustic), 1.2));
         painter.drawPath(wave);
     }
     painter.restore();
+}
+
+void AeroSurface::paintFireNight(QPainter &painter) const
+{
+    const qreal w=width(), h=height(), dpr=devicePixelRatioF();
+    const QSize pixels(qCeil(w*dpr),qCeil(h*dpr));
+    if(m_nightSky.size()!=pixels) {
+        m_nightSky=QImage(pixels,QImage::Format_RGB32);
+        QPainter sky(&m_nightSky);
+        sky.scale(dpr,dpr);
+        sky.setRenderHint(QPainter::Antialiasing);
+        QLinearGradient night(0,0,w*.3,h);
+        night.setColorAt(0,QColor(4,8,26));
+        night.setColorAt(.6,QColor(17,23,49));
+        night.setColorAt(1,QColor(25,56,65));
+        sky.fillRect(rect(),night);
+        QRadialGradient summer(QPointF(w*.8,h*.9),w*.7);
+        summer.setColorAt(0,QColor(147,91,74,27));
+        summer.setColorAt(1,QColor(56,54,110,0));
+        sky.fillRect(rect(),summer);
+        sky.setPen(Qt::NoPen);
+        quint32 seed=7319;
+        auto random=[&seed](){seed=seed*1664525u+1013904223u;return (seed>>8)/16777216.0;};
+        for(int star=0;star<340;++star) {
+            const QPointF point(random()*w,random()*h*.89);
+            const qreal radius=.35+random()*.85;
+            sky.setBrush(QColor(192+star%50,213+star%35,255,65+star%140));
+            sky.drawEllipse(point,radius,radius);
+            if(star%41==0) {
+                sky.setPen(QPen(QColor(214,232,255,60),.65));
+                sky.drawLine(point-QPointF(3,0),point+QPointF(3,0));
+                sky.drawLine(point-QPointF(0,3),point+QPointF(0,3));
+                sky.setPen(Qt::NoPen);
+            }
+        }
+        QPainterPath horizon;
+        horizon.moveTo(0,h);
+        horizon.lineTo(0,h*.96);
+        horizon.cubicTo(w*.18,h*.86,w*.28,h*.98,w*.42,h*.94);
+        horizon.cubicTo(w*.63,h*.84,w*.78,h*.98,w,h*.90);
+        horizon.lineTo(w,h);horizon.closeSubpath();
+        sky.fillPath(horizon,QColor(5,17,27));
+    }
+    painter.drawImage(QRectF(rect()),m_nightSky);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const auto fract=[](qreal x){return x-std::floor(x);};
+    for(int index=0;index<64;++index) {
+        const qreal phase=fract(m_phase/(3.2+(index%5)*.13)+index*.61803398875);
+        if(phase>.085) continue;
+        const qreal t=phase/.085;
+        const qreal depth=.45+(index%7)*.085;
+        const QPointF start(w*(.18+fract(index*.381966)*1.05),h*(-.10+fract(index*.7127)*.77));
+        const QPointF travel(-w*(.25+depth*.2),h*(.18+depth*.16));
+        const QPointF head=start+travel*.8;
+        const QPointF direction=travel/std::hypot(travel.x(),travel.y());
+        const qreal length=(160+depth*240)*(1-t*.55);
+        const QPointF tail=head-direction*length;
+        painter.save();
+        painter.setOpacity(std::pow(1-t,1.2)*depth);
+        QLinearGradient flame(tail,head);
+        flame.setColorAt(0,QColor(255,62,12,0));
+        flame.setColorAt(.45,QColor(255,96,24,105));
+        flame.setColorAt(1,QColor(255,211,120,230));
+        painter.setPen(QPen(QBrush(flame),2*depth,Qt::SolidLine,Qt::RoundCap));
+        painter.drawLine(tail,head);
+        flame.setColorAt(.6,QColor(255,183,74,190));
+        flame.setColorAt(1,QColor(255,253,225,255));
+        painter.setPen(QPen(QBrush(flame),.7*depth,Qt::SolidLine,Qt::RoundCap));
+        painter.drawLine(tail,head);
+        QRadialGradient glow(head,3*depth);
+        glow.setColorAt(0,QColor(255,239,175,220));
+        glow.setColorAt(.25,QColor(255,134,38,105));
+        glow.setColorAt(1,QColor(255,60,12,0));
+        painter.setPen(Qt::NoPen);painter.setBrush(glow);
+        painter.drawEllipse(head,3*depth,3*depth);
+        for(int ember=0;ember<5;++ember) {
+            const qreal age=fract(t*2+ember*.19);
+            const QPointF normal(-direction.y(),direction.x());
+            const QPointF point=head-direction*length*age
+                +normal*(std::sin(index+ember*7.4)*3*age);
+            painter.setBrush(QColor(255,159+ember*12,52,qRound((1-age)*170)));
+            painter.drawEllipse(point,depth,depth*.7);
+        }
+        painter.restore();
+    }
 }
 
 void AeroSurface::paintEvent(QPaintEvent *)
@@ -571,7 +674,8 @@ void AeroSurface::updateAnimationState()
             m_backgroundMovie->start();
         m_backgroundMovie->setPaused(!active);
     }
-    if (!active || (m_background.kind != BackgroundKind::Liquid && !m_backgroundFailed)) {
+    if (!active || (m_background.kind != BackgroundKind::Liquid
+                   && m_background.kind != BackgroundKind::FireMeteor && !m_backgroundFailed)) {
         m_motionTimer->stop();
         if (!active) {
             m_backgroundBlurTimer->stop();
