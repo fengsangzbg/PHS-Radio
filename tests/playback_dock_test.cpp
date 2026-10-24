@@ -355,7 +355,7 @@ void verifyPlaybackMeteor(PlaybackDock &dock)
     dock.triggerPlaybackMeteor();
     check(dock.m_meteor->isRunning() && dock.m_meteor->progress() == 0,
           "A new track started outside the dock must be able to restart the meteor.");
-    waitForEvents(PlaybackMeteor::DurationMs + 140);
+    waitForEvents(PlaybackMeteor::RibbonDurationMs + 140);
     check(!dock.m_meteor->isRunning() && dock.m_meteor->isHidden(), "The meteor must fade away at its endpoint.");
     dock.onPlayPause = {};
 }

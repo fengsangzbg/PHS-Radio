@@ -1,12 +1,18 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QImage>
 #include <QRegion>
 #include <QWidget>
 #include <array>
 
 class QTimer;
+class QPainter;
 
+// Playback flourish for the dock. Two deliberately different languages:
+//   * GreenLaser (the default water dock) draws long glass ribbons that sweep
+//     one at a time, lit like Frutiger Aero glass with a spectral rim.
+//   * Fire keeps the original fixed-beam flash, unchanged.
 class PlaybackMeteor final : public QWidget {
 public:
     explicit PlaybackMeteor(QWidget *host);
@@ -23,7 +29,6 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    void advance();
     struct Meteor {
         QPointF start;
         QPointF end;
@@ -34,13 +39,24 @@ private:
         qreal brightness;
         qreal bend;
     };
+
+    int durationMs() const;
+    int beamCount() const;
+    const Meteor &beam(int index) const;
     qreal meteorProgress(int index) const;
     qreal meteorOpacity(int index) const;
+    QPointF mapped(const QPointF &normalized) const;
+    QPointF pointAt(int index, qreal travel) const;
     QPointF headPosition(int index = 0) const;
     QPointF tailPosition(int index = 0) const;
     QPointF direction(int index = 0) const;
     QRegion frameRegion() const;
     QRect frameBounds() const;
+    void advance();
+    void ensureSprites();
+    void dropSprites();
+    void paintRibbons(QPainter &painter);
+    void paintLegacyFire(QPainter &painter);
 
     QWidget *m_host;
     QTimer *m_timer;
@@ -49,7 +65,13 @@ private:
     qreal m_progress = 0;
     bool m_running = false;
     Style m_style = Style::GreenLaser;
-    // A single clock fades fixed, antialiased vector beams.
-    static constexpr int DurationMs = 1120;
-    static const std::array<Meteor, 7> Meteors;
+    qreal m_spriteDpr = 0;
+    QImage m_tailSprite;
+    QImage m_headSprite;
+
+    static constexpr int RibbonDurationMs = 1290;
+    static constexpr int FireDurationMs = 1120;
+    static constexpr qreal TailSpan = .70;
+    static const std::array<Meteor, 7> Ribbons;
+    static const std::array<Meteor, 7> FireBeams;
 };

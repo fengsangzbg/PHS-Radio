@@ -15,3 +15,8 @@ services/netease/node_modules/
 .env
 .env.*
 !.env.example
+
+tools/meteor-preview/*.png
+tools/meteor-preview/*.gif
+tools/meteor-preview/*.exe
+tools/meteor-preview/frames-*/

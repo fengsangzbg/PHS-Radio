@@ -2751,6 +2751,7 @@ int main(int argc, char *argv[])
     PlayerWindow window(selected, setupCompleted, smokeMode);
     if (smokeMode) window.setEnabled(false);
     window.show();
+
     if (!smokeMode) return app.exec();
 
     // No real account is restored and the disabled smoke UI cannot open login
