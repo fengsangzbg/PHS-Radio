@@ -89,10 +89,31 @@ final class GlassRow extends LinearLayout {
         rim.inset(dp(.5f), dp(.5f));
         canvas.drawRoundRect(rim, radius, radius, stroke);
         if (shelf) {
-            // The lip of the shelf: a brighter line where the cover sits.
-            stroke.setStrokeWidth(dp(1.6f));
-            stroke.setColor(0x88CFEFF7);
-            canvas.drawLine(bounds.left + radius * .4f, h - dp(4), bounds.right - radius * .4f, h - dp(4), stroke);
+            // A physical shelf: the cover rests on a lit ledge, with a contact
+            // shadow underneath and a soft shade falling off the front edge.
+            if (getChildCount() > 0) {
+                android.view.View art = getChildAt(0);
+                float shadowY = art.getBottom() - dp(1);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setShader(new RadialGradient(w / 2f, shadowY, art.getWidth() * .68f,
+                        new int[]{0x73000408, 0x00000408}, null, Shader.TileMode.CLAMP));
+                RectF shade = new RectF(w / 2f - art.getWidth() * .62f, shadowY - dp(7),
+                        w / 2f + art.getWidth() * .62f, shadowY + dp(9));
+                canvas.drawOval(shade, paint);
+                paint.setShader(null);
+            }
+            float ledgeTop = h - dp(13);
+            RectF ledge = new RectF(bounds.left + dp(7), ledgeTop, bounds.right - dp(7), h - dp(2));
+            paint.setShader(new LinearGradient(0, ledgeTop, 0, h,
+                    new int[]{0xFFCFF1FA, 0xFF6FB6CB, 0xFF23596E},
+                    new float[]{0f, .35f, 1f}, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(ledge, dp(4), dp(4), paint);
+            paint.setShader(null);
+            stroke.setStrokeWidth(dp(.8f));
+            stroke.setColor(0x99F2FEFF);
+            canvas.drawLine(ledge.left + dp(2), ledgeTop, ledge.right - dp(2), ledgeTop, stroke);
+            stroke.setColor(0x33000810);
+            canvas.drawLine(ledge.left + dp(2), h - dp(2.5f), ledge.right - dp(2), h - dp(2.5f), stroke);
         }
 
         // Squash on press plus the scroll jelly: both are canvas transforms, so a
