@@ -24,3 +24,5 @@ tools/meteor-preview/frames-*/
 tools/_logo_out/
 
 tools/_probe/
+
+tools/_logo_tmp/
