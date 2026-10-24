@@ -1,0 +1,10 @@
+PHS Radio Android 0.1.7-preview
+
+- 启动场景改为完全不透明：先铺底色再画天空，播放器界面不会透出来造成重影。
+- P logo 增加持续自转，按下卡片时转速从 0.55 rad/s 加速到 7 rad/s，松开后回落。
+- 新增「起风」特效：三条螺旋风丝围绕 logo，角度按电脑版 shader 的公式
+  a = (2πk − time×3.8 + r×24) / 3 计算，强度跟随转速。
+- 进入播放器时改为指数缓动放大 + 结尾白色闪光，与电脑版 zoomProgress /
+  whiteProgress 一致。
+- 新增启动器图标：同一份 P logo 合成在水蓝渐变圆角底板上，输出 5 档 mipmap；
+  Windows 的 app.ico 也从这张图重新生成。
