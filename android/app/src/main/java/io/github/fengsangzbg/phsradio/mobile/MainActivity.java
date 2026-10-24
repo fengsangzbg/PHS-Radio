@@ -43,6 +43,8 @@ public final class MainActivity extends Activity {
     private SeekBar progress;
     private BaseAdapter adapter;
     private AquariumEntrance entrance;
+    private boolean sideRailVisible;
+    private float volumeValue=1;
     private long duration;
     private boolean seeking,registered;
     private final BroadcastReceiver state=new BroadcastReceiver(){public void onReceive(Context c,Intent i){
@@ -51,7 +53,7 @@ public final class MainActivity extends Activity {
         mode.setText(new String[]{"顺序","随机","单曲循环"}[Math.floorMod(i.getIntExtra("playMode",0),3)]);
         boolean playing=i.getBooleanExtra("playing",false);if(playing&&!wasPlaying&&getSharedPreferences("mobile",0).getBoolean("meteors",true))meteor.flash("fire".equals(wallpaper.mode()));wasPlaying=playing;
         songPage.online(i.getStringExtra("track"),i.getStringExtra("lyrics"));
-        songPage.lyricStatus(i.getStringExtra("lyricState"),i.getStringExtra("lyricError"));if(sideVolume!=null)sideVolume.level(i.getFloatExtra("volume",1));
+        songPage.lyricStatus(i.getStringExtra("lyricState"),i.getStringExtra("lyricError"));volumeValue=i.getFloatExtra("volume",1);if(sideVolume!=null)sideVolume.level(volumeValue);
         songPage.state(i.getStringExtra("uri")==null?"":i.getStringExtra("uri"),i.getStringExtra("title"),i.getLongExtra("position",0),playing);
         duration=i.getLongExtra("duration",0);long position=i.getLongExtra("position",0);
         if(!seeking)progress.setProgress(duration>0?(int)(position*1000/duration):0);
@@ -76,11 +78,11 @@ public final class MainActivity extends Activity {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.logo_phs);header.addView(logo,new LinearLayout.LayoutParams(dp(40),dp(40)));logo.setOnClickListener(v->v.animate().rotationBy(360).scaleX(.85f).scaleY(.85f).setDuration(250).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator(3)).setDuration(400).start()).start());
         TextView brand=text("PHS Radio",19,true);brand.setOnClickListener(v->{v.animate().rotationBy(360).scaleX(1.08f).scaleY(.94f).setDuration(330).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator()).setDuration(300).start()).start();});header.addView(brand,new LinearLayout.LayoutParams(0,dp(54),1));
         Button account=button("账号",()->accounts.show());header.addView(account,new LinearLayout.LayoutParams(dp(68),dp(46)));
-        Button theme=button("主题",()->showThemes());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);
+        Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);
         LinearLayout actions=row();actions.setPadding(0,dp(10),0,dp(8));
         EditText search=new EditText(this);search.setSingleLine();search.setTextColor(Color.WHITE);search.setHintTextColor(0xFFA8CACF);search.setHint("搜索本地、酷狗、网易云歌曲或歌手");search.setTextSize(14);search.setPadding(dp(16),0,dp(12),0);search.setBackground(glass(24));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);actions.addView(search,new LinearLayout.LayoutParams(0,dp(46),1));content.addView(actions);
         LinearLayout nav=row();content.addView(nav);
-        LinearLayout bodyRow=row();content.addView(bodyRow,new LinearLayout.LayoutParams(-1,0,1));FrameLayout body=new FrameLayout(this);bodyRow.addView(body,new LinearLayout.LayoutParams(0,-1,1));sideVolume=new VerticalVolume(this,value->command(new Intent(this,PlaybackService.class).setAction("volume").putExtra("volume",value),false));sideVolume.level(getSharedPreferences("mobile",0).getFloat("volume",1));LinearLayout.LayoutParams rail=new LinearLayout.LayoutParams(dp(32),dp(168));rail.gravity=Gravity.CENTER_VERTICAL;rail.leftMargin=dp(6);bodyRow.addView(sideVolume,rail);onlineHost=new FrameLayout(this);body.addView(onlineHost,new FrameLayout.LayoutParams(-1,-1));
+        LinearLayout bodyRow=row();content.addView(bodyRow,new LinearLayout.LayoutParams(-1,0,1));FrameLayout body=new FrameLayout(this);bodyRow.addView(body,new LinearLayout.LayoutParams(0,-1,1));sideVolume=new VerticalVolume(this,value->command(new Intent(this,PlaybackService.class).setAction("volume").putExtra("volume",value),false));sideVolume.level(getSharedPreferences("mobile",0).getFloat("volume",1));LinearLayout.LayoutParams rail=new LinearLayout.LayoutParams(dp(32),dp(168));rail.gravity=Gravity.CENTER_VERTICAL;rail.leftMargin=dp(6);bodyRow.addView(sideVolume,rail);sideVolume.setVisibility(View.GONE);onlineHost=new FrameLayout(this);body.addView(onlineHost,new FrameLayout.LayoutParams(-1,-1));
         localScreen=new LinearLayout(this);localScreen.setOrientation(1);localScreen.setVisibility(View.GONE);body.addView(localScreen,new FrameLayout.LayoutParams(-1,-1));
         pages=new OnlinePages(this,onlineHost,()->queue());pages.onCentre=this::selectCentre;pages.onConnect=()->accounts.show();pages.onRouteSwipe=dx->{if(!route.swipe(dx))return false;lyricRequested=false;renderRoute();onlineHost.setTranslationX(dx<0?dp(38):-dp(38));onlineHost.setAlpha(.6f);onlineHost.animate().translationX(0).alpha(1).setDuration(240).start();return true;};
         String[] tabs={"酷狗歌单","酷狗推荐","唱片歌词","网易推荐","网易歌单"};for(int i=0;i<tabs.length;i++){final int selected=i;Button tab=button(tabs[i],()->{searchHandler.removeCallbacksAndMessages(null);lyricRequested=false;route.select(selected);renderRoute();});tab.setTextSize(11);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(42),1));}
@@ -138,7 +140,25 @@ public final class MainActivity extends Activity {
     }
     private void send(String action){if("toggle".equals(action)&&play.getText().equals("▶")&&now.getText().equals("选择一首音乐")&&!uris.isEmpty())start(0);else command(new Intent(this,PlaybackService.class).setAction(action),false);}
     private void command(Intent intent,boolean foreground){if(foreground)startForegroundService(intent);else startService(intent);}
-    private void showThemes(){
+    private void showSettings(){
+        final Dialog dialog=new Dialog(this);
+        LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(22),dp(22),dp(22),dp(18));panel.setBackground(glass(30));
+        panel.addView(text("设置",22,true));
+        final Button rail=button(sideRailVisible?"隐藏侧边音量条":"显示侧边音量条",()->{});
+        rail.setOnClickListener(v->{sideRailVisible=!sideRailVisible;sideVolume.setVisibility(sideRailVisible?View.VISIBLE:View.GONE);rail.setText(sideRailVisible?"隐藏侧边音量条":"显示侧边音量条");});
+        LinearLayout.LayoutParams wide=new LinearLayout.LayoutParams(-1,dp(48));wide.topMargin=dp(8);
+        panel.addView(rail,wide);
+        panel.addView(button("主题 · 背景与配色",()->{dialog.dismiss();showThemes();}),wide);
+        panel.addView(button("导入本地音乐",()->{dialog.dismiss();choose(MUSIC,"audio/*");}),wide);
+        panel.addView(text("音量",14,false),new LinearLayout.LayoutParams(-1,dp(30)));
+        SeekBar volume=new SeekBar(this);volume.setMax(100);volume.setProgress(Math.round(volumeValue*100));
+        volume.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            public void onProgressChanged(SeekBar s,int p,boolean fromUser){if(fromUser)command(new Intent(MainActivity.this,PlaybackService.class).setAction("volume").putExtra("volume",p/100f),false);}
+            public void onStartTrackingTouch(SeekBar s){}
+            public void onStopTrackingTouch(SeekBar s){}});
+        panel.addView(volume,new LinearLayout.LayoutParams(-1,dp(40)));
+        dialog.setContentView(panel);dialog.show();
+    }    private void showThemes(){
         Dialog dialog=new Dialog(this);LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(22),dp(22),dp(22),dp(18));panel.setBackground(glass(30));
         TextView title=text("你的背景，你的节奏",22,true);panel.addView(title);TextView hint=text("在星空视频壁纸中设好桌面动态壁纸后，可在这里跟随显示。系统壁纸的声音由壁纸应用管理；导入视频在本软件内始终静音。",14,false);hint.setTextColor(0xFFC0DEE1);hint.setPadding(0,dp(14),0,dp(16));panel.addView(hint);
         addTheme(panel,"显示桌面动态壁纸",()->{wallpaper.set("system","");dialog.dismiss();});

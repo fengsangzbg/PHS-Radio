@@ -8,7 +8,7 @@ import java.io.*;
 import java.net.*;
 import java.util.concurrent.*;
 final class CoverImages implements AutoCloseable {
-    private final ExecutorService pool=Executors.newFixedThreadPool(2);
+    private final ExecutorService pool=Executors.newFixedThreadPool(4);
     private final Handler main=new Handler(Looper.getMainLooper());
     private final LruCache<String,Bitmap> cache=new LruCache<String,Bitmap>(16*1024*1024){protected int sizeOf(String key,Bitmap b){return b.getAllocationByteCount();}};
     private volatile boolean closed;
