@@ -24,7 +24,7 @@ final class SongPage implements AutoCloseable {
     private ViewGroup host;
     private LinearLayout page,lyricPanel;
     private FrameLayout discPanel;
-    private GlassVisual record;
+    private RecordGLView record;
     private ScrollView scroll;
     private TextView title,words,status;
     private String song="",songTitle="选择一首音乐",onlineCover="",onlineLyrics="",lyricState="idle",lyricError="";
@@ -43,7 +43,7 @@ final class SongPage implements AutoCloseable {
         if(page!=null)return;host=target;page=new LinearLayout(activity);page.setOrientation(1);page.setPadding(dp(4),dp(8),dp(4),dp(8));
         title=text(songTitle,20);title.setGravity(Gravity.CENTER);title.setMaxLines(2);page.addView(title,new LinearLayout.LayoutParams(-1,-2));
         FrameLayout body=new FrameLayout(activity);page.addView(body,new LinearLayout.LayoutParams(-1,0,1));
-        discPanel=new FrameLayout(activity);record=new GlassVisual(activity,false);record.playing(playing);discPanel.addView(record,new FrameLayout.LayoutParams(-1,-1));body.addView(discPanel,new FrameLayout.LayoutParams(-1,-1));
+        discPanel=new FrameLayout(activity);record=new RecordGLView(activity);record.playing(playing);discPanel.addView(record,new FrameLayout.LayoutParams(-1,-1));body.addView(discPanel,new FrameLayout.LayoutParams(-1,-1));
         lyricPanel=new LinearLayout(activity);lyricPanel.setOrientation(1);lyricPanel.setPadding(dp(12),dp(8),dp(12),dp(8));lyricPanel.setBackground(glass());
         LinearLayout bar=new LinearLayout(activity);Button back=new AeroButton(activity);back.setText("返回唱片");back.setOnClickListener(v->{lyricMode=false;displayMode();});bar.addView(back,new LinearLayout.LayoutParams(dp(92),dp(40)));TextView caption=text("歌词",16);caption.setGravity(Gravity.CENTER);bar.addView(caption,new LinearLayout.LayoutParams(0,dp(40),1));Button options=new AeroButton(activity);options.setText("···");options.setOnClickListener(v->options());bar.addView(options,new LinearLayout.LayoutParams(dp(48),dp(40)));lyricPanel.addView(bar);
         status=text("",14);status.setGravity(Gravity.CENTER);status.setOnClickListener(v->retry());lyricPanel.addView(status,new LinearLayout.LayoutParams(-1,-2));
@@ -75,8 +75,8 @@ final class SongPage implements AutoCloseable {
         if(page==null||record==null)return;record.cover(null);record.playing(playing);String uri=song,remote=onlineCover;int ticket=++generation;if(uri.isEmpty())return;
         io.execute(()->{if(closed||ticket!=generation)return;Bitmap result=null;if(uri.startsWith("phs://")){try{result=CoverImages.fetch(remote);}catch(Exception ignored){}}else try(MediaMetadataRetriever retriever=new MediaMetadataRetriever()){retriever.setDataSource(activity,Uri.parse(uri));byte[] bytes=retriever.getEmbeddedPicture();if(bytes!=null){BitmapFactory.Options options=new BitmapFactory.Options();options.inJustDecodeBounds=true;BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);options.inSampleSize=1;while(Math.max(options.outWidth,options.outHeight)/options.inSampleSize>2048)options.inSampleSize*=2;options.inJustDecodeBounds=false;result=BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);}}catch(Exception ignored){}Bitmap bitmap=result;main.post(()->{if(!closed&&ticket==generation&&page!=null)record.cover(bitmap);});});
     }
-    void pause(){resumed=false;main.removeCallbacks(follow);if(record!=null)record.active(false);}
-    void resume(){resumed=true;if(page!=null){record.active(!lyricMode);main.removeCallbacks(follow);if(lyricMode)main.post(follow);}}
+    void pause(){resumed=false;main.removeCallbacks(follow);if(record!=null){record.active(false);record.onPause();}}
+    void resume(){resumed=true;if(record!=null)record.onResume();if(page!=null){record.active(!lyricMode);main.removeCallbacks(follow);if(lyricMode)main.post(follow);}}
     private TextView text(String value,int size){TextView t=new TextView(activity);t.setText(value);t.setTextSize(size);t.setTextColor(0xFFE6FAFF);t.setPadding(dp(6),dp(6),dp(6),dp(6));return t;}
     private GradientDrawable glass(){GradientDrawable d=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0x44316E80,0x33122B46});d.setCornerRadius(dp(26));d.setStroke(dp(1),0x4486CEDA);return d;}
     private int dp(int n){return Math.round(n*activity.getResources().getDisplayMetrics().density);}
