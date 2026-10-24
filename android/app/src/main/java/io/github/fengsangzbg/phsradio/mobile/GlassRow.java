@@ -24,12 +24,16 @@ final class GlassRow extends LinearLayout {
     private float phase;
     private float press;
     private boolean pressed;
+    private boolean shelf;
 
     /** Called while a list scrolls: rows squash like jelly and settle back. */
     static void kick(float amount) {
         pulse = Math.min(1f, amount);
         pulseAt = SystemClock.uptimeMillis();
     }
+
+    /** Squarer silhouette with a bright lower lip, for shelf style tiles. */
+    void shelf(boolean on) { shelf = on; }
 
     GlassRow(Context context) {
         super(context);
@@ -57,7 +61,7 @@ final class GlassRow extends LinearLayout {
 
         float w = getWidth(), h = getHeight();
         bounds.set(0, 0, w, h);
-        float radius = h * .32f;
+        float radius = shelf ? h * .10f : h * .32f;
 
         paint.setStyle(Paint.Style.FILL);
         paint.setShader(new LinearGradient(0, 0, w, h,
@@ -84,6 +88,12 @@ final class GlassRow extends LinearLayout {
         RectF rim = new RectF(bounds);
         rim.inset(dp(.5f), dp(.5f));
         canvas.drawRoundRect(rim, radius, radius, stroke);
+        if (shelf) {
+            // The lip of the shelf: a brighter line where the cover sits.
+            stroke.setStrokeWidth(dp(1.6f));
+            stroke.setColor(0x88CFEFF7);
+            canvas.drawLine(bounds.left + radius * .4f, h - dp(4), bounds.right - radius * .4f, h - dp(4), stroke);
+        }
 
         // Squash on press plus the scroll jelly: both are canvas transforms, so a
         // recycled row deforms without relayout. The jelly is a damped spring, so

@@ -1,4 +1,4 @@
-# PHS Radio Android 0.1.17-preview
+# PHS Radio Android 0.1.18-preview
 
 原生 Java 安卓工程，独立于 Windows C++/Qt 版本。Windows 入口、CMake 和 Wallpaper Engine 代码未改动。本包为手机测试版，不是 Windows 更新包。
 
@@ -41,7 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/prepare-sdk.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-preview.ps1
 ```
 
-输出：`app/build/outputs/apk/preview/PHS-Radio-Android-0.1.17-preview.apk`。本地测试签名可覆盖前期预览包；密钥和 SDK 留在 `.toolchain`，不可公开发布测试签名密钥。正式发行需单独规划长期签名和更新渠道。
+输出：`app/build/outputs/apk/preview/PHS-Radio-Android-0.1.18-preview.apk`。本地测试签名可覆盖前期预览包；密钥和 SDK 留在 `.toolchain`，不可公开发布测试签名密钥。正式发行需单独规划长期签名和更新渠道。
 
 遵循上级 GPL-3.0；二维码库 ZXing Core 3.5.3 使用 Apache-2.0，许可证见 app/libs/ZXing-LICENSE.txt。平台协议参考现有 Windows 依赖 MakcRe/KuGouMusicApi、NeteaseCloudMusicApiEnhanced。主机测试 JSON 库只放 `.host-test`，不进入 APK。
 
@@ -54,7 +54,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-preview.ps1
 网易云二维码请求保留 Cookie、固定安装设备身份，重试不会因一次网络异常中断；回前台立即检查，可手动检查，成功前校验账号、成功后刷新页面。真实授权确认仍待手机验收。
 
 额外回归涵盖 LRC 偏移、多时间戳、纯文本、KRC 解码、嵌套字段、仅音频 ID、缺标识保留、扫码 Cookie 合并和嵌套状态。实际联网验证新二维码返回等待扫码 801，以及酷狗逐句歌词、封面和公开歌单首批识别。
-## 0.1.17 启动场景
+## 0.1.18 启动场景
 
 - 新增水族箱启动界面：天空照片、缓慢游过的座头鲸、玻璃地面上的焦散光带、上升气泡与暗角，全部用 Canvas 逐帧绘制，不依赖 OpenGL。
 - 中央玻璃卡片使用与 Windows 同一份矢量源生成的 1024px 高清 logo；标题、副标题与「点击进入」呼吸提示都放在卡片内。
