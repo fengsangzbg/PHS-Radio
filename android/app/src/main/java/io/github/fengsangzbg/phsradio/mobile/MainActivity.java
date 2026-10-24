@@ -49,6 +49,8 @@ public final class MainActivity extends Activity {
     private LinearLayout searchCard;
     private LinearLayout suggestionBox;
     private final java.util.List<Button> navTabs=new ArrayList<>();
+    private LinearLayout navBar;
+    private boolean dragBlocked;
     private TextView pullHint;
     private final java.util.List<View> topParts=new ArrayList<>();
     private EditText headerSearch;
@@ -105,11 +107,11 @@ public final class MainActivity extends Activity {
         Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);pageParts.add(header);topParts.add(header);
         LinearLayout actions=row();actions.setPadding(0,dp(10),0,dp(8));
         EditText search=new EditText(this);search.setSingleLine();search.setTextColor(Color.WHITE);search.setHintTextColor(0xFFA8CACF);search.setHint("搜索本地、酷狗、网易云歌曲或歌手");search.setTextSize(14);search.setPadding(dp(16),0,dp(12),0);search.setBackground(glass(24));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);headerSearch=search;
-        LinearLayout nav=row();content.addView(nav);pageParts.add(nav);topParts.add(nav);
+        LinearLayout nav=row();navBar=nav;content.addView(nav);pageParts.add(nav);topParts.add(nav);
         LinearLayout bodyRow=row();content.addView(bodyRow,new LinearLayout.LayoutParams(-1,0,1));pageParts.add(bodyRow);FrameLayout body=new FrameLayout(this);bodyRow.addView(body,new LinearLayout.LayoutParams(0,-1,1));sideVolume=new VerticalVolume(this,value->command(new Intent(this,PlaybackService.class).setAction("volume").putExtra("volume",value),false));sideVolume.level(getSharedPreferences("mobile",0).getFloat("volume",1));LinearLayout.LayoutParams rail=new LinearLayout.LayoutParams(dp(32),dp(168));rail.gravity=Gravity.CENTER_VERTICAL;rail.leftMargin=dp(6);bodyRow.addView(sideVolume,rail);sideVolume.setVisibility(View.GONE);onlineHost=new FrameLayout(this);body.addView(onlineHost,new FrameLayout.LayoutParams(-1,-1));
         localScreen=new LinearLayout(this);localScreen.setOrientation(1);localScreen.setVisibility(View.GONE);body.addView(localScreen,new FrameLayout.LayoutParams(-1,-1));
-        pages=new OnlinePages(this,onlineHost,()->queue());pages.onCentre=this::selectCentre;pages.onConnect=()->accounts.show();pages.onRouteSwipe=dx->{if(!route.swipe(dx))return false;lyricRequested=false;renderRoute();onlineHost.setTranslationX(dx<0?dp(38):-dp(38));onlineHost.setAlpha(.6f);onlineHost.animate().translationX(0).alpha(1).setDuration(240).start();return true;};
-        String[] tabs={"酷狗歌单","酷狗推荐","唱片歌词","网易推荐","网易歌单"};for(int i=0;i<tabs.length;i++){final int selected=i;Button tab=button(tabs[i],()->{searchHandler.removeCallbacksAndMessages(null);lyricRequested=false;route.select(selected);renderRoute();});tab.setTextSize(11);navTabs.add(tab);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(42),1));}
+        pages=new OnlinePages(this,onlineHost,()->queue());pages.onCentre=this::selectCentre;pages.onConnect=()->accounts.show();pages.onRouteSwipe=dx->{if(!stepPage(dx<0?1:-1))return false;lyricRequested=false;renderRoute();onlineHost.setTranslationX(dx<0?dp(38):-dp(38));onlineHost.setAlpha(.6f);onlineHost.animate().translationX(0).alpha(1).setDuration(240).start();return true;};
+        buildTabs();
         summary=text("本地音乐",13,false);localScreen.addView(summary);localScreen.addView(button("导入本地音乐",()->choose(MUSIC,"audio/*")),new LinearLayout.LayoutParams(-1,dp(44)));
         ListView list=new ListView(this);list.setBackgroundColor(Color.TRANSPARENT);list.setDivider(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));list.setDividerHeight(dp(9));
         adapter=new BaseAdapter(){public int getCount(){return visible.size();}public Object getItem(int n){return titles.get(visible.get(n));}public long getItemId(int n){return visible.get(n);}public View getView(int n,View recycled,ViewGroup parent){GlassRow row;TextView label;if(recycled instanceof GlassRow){row=(GlassRow)recycled;label=(TextView)row.getChildAt(0);}else{row=new GlassRow(MainActivity.this);row.setPadding(dp(16),dp(10),dp(16),dp(10));label=text("",15,false);label.setSingleLine();label.setEllipsize(TextUtils.TruncateAt.END);label.setGravity(Gravity.CENTER_VERTICAL);row.addView(label,new LinearLayout.LayoutParams(-1,-2));}label.setText(titles.get(visible.get(n)));return row;}};
@@ -130,10 +132,12 @@ public final class MainActivity extends Activity {
         switch(e.getActionMasked()){
             case MotionEvent.ACTION_DOWN:
                 downX=e.getX();downY=e.getY();drag=0;
+                // Sliders and horizontal strips own the gesture: never page from them.
+                dragBlocked=inHorizontalScroll(getWindow().getDecorView(),e.getRawX(),e.getRawY());
                 return super.dispatchTouchEvent(e);
             case MotionEvent.ACTION_MOVE:{
                 float dx=e.getX()-downX,dy=e.getY()-downY;
-                if(drag==0){
+                if(drag==0&&!dragBlocked){
                     if(Math.abs(dx)>dp(10)&&Math.abs(dx)>Math.abs(dy)*1.2f)drag=1;
                     else if(dy>dp(10)&&downY<dp(150)&&Math.abs(dy)>Math.abs(dx)*1.2f)drag=2;
                 }
@@ -184,7 +188,7 @@ public final class MainActivity extends Activity {
                     if(started[0])return;
                     started[0]=true;
                     if(pages==null)return;
-                    if(pages.swipe(direction>0?-200:200)){
+                    if(stepPage(direction)){
                         flipFrom=-direction*width*.45f;
                         renderRoute();
                     }else{
@@ -212,8 +216,69 @@ public final class MainActivity extends Activity {
         brand.setText(text);
         brand.setLineSpacing(0f,1.05f);
     }
+    private String platformMode(){
+        return getSharedPreferences("mobile",0).getString("platformMode","both");
+    }
+
+    /** Route indexes that the current mode actually exposes, in tab order. */
+    private int[] visibleRoutes(){
+        String mode=platformMode();
+        if("kugou".equals(mode))return new int[]{0,1,2};
+        if("netease".equals(mode))return new int[]{4,3,2};
+        return new int[]{0,1,2,3,4};
+    }
+
+    private String[] visibleLabels(){
+        String mode=platformMode();
+        if("kugou".equals(mode))return new String[]{"酷狗歌单","酷狗推荐","唱片歌词"};
+        if("netease".equals(mode))return new String[]{"网易歌单","网易推荐","唱片歌词"};
+        return new String[]{"酷狗歌单","酷狗推荐","唱片歌词","网易推荐","网易歌单"};
+    }
+
+    private void buildTabs(){
+        if(navBar==null)return;
+        navBar.removeAllViews();
+        navTabs.clear();
+        String[] labels=visibleLabels();
+        final int[] routes=visibleRoutes();
+        for(int i=0;i<labels.length;i++){
+            final int target=routes[i];
+            Button tab=button(labels[i],()->{
+                searchHandler.removeCallbacksAndMessages(null);
+                lyricRequested=false;
+                route.select(target);
+                renderRoute();
+            });
+            tab.setTextSize(11);
+            navTabs.add(tab);
+            navBar.addView(tab,new LinearLayout.LayoutParams(0,dp(42),1));
+        }
+        highlightTabs();
+    }
+
+    /** Moves one page along the visible order; false when already at an end. */
+    private boolean stepPage(int direction){
+        int[] order=visibleRoutes();
+        int pos=-1;
+        for(int i=0;i<order.length;i++)if(order[i]==route.index())pos=i;
+        if(pos<0){
+            route.select(order[Math.max(0,Math.min(order.length-1,direction>0?0:order.length-1))]);
+            return true;
+        }
+        int next=pos+direction;
+        if(next<0||next>=order.length)return false;
+        route.select(order[next]);
+        return true;
+    }
+
+    private void setPlatformMode(String mode){
+        getSharedPreferences("mobile",0).edit().putString("platformMode",mode).apply();
+        buildTabs();
+        route.select(HomeRoute.CENTRE);
+        renderRoute();
+    }
     private void highlightTabs(){
-        int active=route.index();
+        int[] order=visibleRoutes();int active=-1;for(int i=0;i<order.length;i++)if(order[i]==route.index())active=i;
         for(int i=0;i<navTabs.size();i++){
             Button tab=navTabs.get(i);
             boolean on=i==active;
@@ -358,7 +423,16 @@ public final class MainActivity extends Activity {
         final Button rail=button(sideRailVisible?"隐藏侧边音量条":"显示侧边音量条",()->{});
         rail.setOnClickListener(v->{sideRailVisible=!sideRailVisible;sideVolume.setVisibility(sideRailVisible?View.VISIBLE:View.GONE);rail.setText(sideRailVisible?"隐藏侧边音量条":"显示侧边音量条");});
         LinearLayout.LayoutParams wide=new LinearLayout.LayoutParams(-1,dp(48));wide.topMargin=dp(8);
-        panel.addView(rail,wide);
+        panel.addView(text("平台",14,false),new LinearLayout.LayoutParams(-1,dp(26)));
+        String[] modeKeys={"both","kugou","netease"};
+        String[] modeLabels={"两个我都用","我是酷狗用户","我是网易云用户"};
+        for(int m=0;m<modeKeys.length;m++){
+            final String key=modeKeys[m];
+            final boolean current=key.equals(platformMode());
+            Button choice=button(current?"✓ "+modeLabels[m]:modeLabels[m],()->{setPlatformMode(key);dialog.dismiss();});
+            panel.addView(choice,wide);
+        }
+        panel.addView(text("主题与音量",14,false),new LinearLayout.LayoutParams(-1,dp(26)));        panel.addView(rail,wide);
         panel.addView(button("主题 · 背景与配色",()->{dialog.dismiss();showThemes();}),wide);
         panel.addView(button("导入本地音乐",()->{dialog.dismiss();choose(MUSIC,"audio/*");}),wide);
         panel.addView(text("音量",14,false),new LinearLayout.LayoutParams(-1,dp(30)));
