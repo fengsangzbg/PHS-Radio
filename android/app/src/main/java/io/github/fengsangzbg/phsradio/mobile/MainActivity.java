@@ -88,13 +88,19 @@ public final class MainActivity extends Activity {
         });
         meteor=new PlayMeteor(this);root.addView(meteor,new FrameLayout.LayoutParams(-1,-1));
         setContentView(root);
-        pullHint=text("↓  下拉打开搜索",11,false);
-        pullHint.setGravity(Gravity.CENTER);
-        pullHint.setTextColor(0x99CFEFF7);
-        content.addView(pullHint,new LinearLayout.LayoutParams(-1,dp(18)));
-        if(getSharedPreferences("mobile",0).getBoolean("searchHintSeen",false))pullHint.setVisibility(View.GONE);        LinearLayout header=row();header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView hint=text("↓  下拉此处呼出搜索框",11,false);
+        hint.setGravity(Gravity.CENTER);
+        hint.setTextColor(0xCCCFEFF7);
+        hint.setBackground(glass(14));
+        hint.setPadding(dp(14),0,dp(14),0);
+        LinearLayout.LayoutParams hintSize=new LinearLayout.LayoutParams(-2,dp(26));
+        hintSize.gravity=Gravity.CENTER_HORIZONTAL;hintSize.topMargin=dp(2);hintSize.bottomMargin=dp(6);
+        content.addView(hint,hintSize);
+        android.animation.ObjectAnimator bob=android.animation.ObjectAnimator.ofFloat(hint,"translationY",0f,dp(5));
+        bob.setDuration(900);bob.setRepeatMode(android.animation.ValueAnimator.REVERSE);
+        bob.setRepeatCount(android.animation.ValueAnimator.INFINITE);bob.start();        LinearLayout header=row();header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.logo_phs);header.addView(logo,new LinearLayout.LayoutParams(dp(40),dp(40)));logo.setOnClickListener(v->v.animate().rotationBy(360).scaleX(.85f).scaleY(.85f).setDuration(250).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator(3)).setDuration(400).start()).start());
-        TextView brand=text("PHS Radio",19,true);brand.setOnClickListener(v->{v.animate().rotationBy(360).scaleX(1.08f).scaleY(.94f).setDuration(330).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator()).setDuration(300).start()).start();});header.addView(brand,new LinearLayout.LayoutParams(0,dp(54),1));
+        TextView brand=text("PHS Radio",19,true);brandView=brand;brand.setOnClickListener(v->{v.animate().rotationBy(360).scaleX(1.08f).scaleY(.94f).setDuration(330).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator()).setDuration(300).start()).start();});header.addView(brand,new LinearLayout.LayoutParams(0,dp(54),1));
         Button account=button("账号",()->accounts.show());header.addView(account,new LinearLayout.LayoutParams(dp(68),dp(46)));
         Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);pageParts.add(header);topParts.add(header);
         LinearLayout actions=row();actions.setPadding(0,dp(10),0,dp(8));
@@ -192,6 +198,20 @@ public final class MainActivity extends Activity {
     private void selectLyrics(){lyricRequested=true;route.select(HomeRoute.CENTRE);renderRoute();}
     /** Whole-page transition: header, search row, tabs and body slide together. */
     /** Marks the tab that owns the current page, and pulses it once. */
+    private TextView brandView;
+
+    /** Brand plus the pull-down hint, on one line block so the header stays one piece. */
+    private void applyBrandHint(TextView brand){
+        if(getSharedPreferences("mobile",0).getBoolean("searchHintSeen",false)){
+            brand.setText("PHS Radio");
+            return;
+        }
+        android.text.SpannableString text=new android.text.SpannableString("PHS Radio\n↓ 下拉搜索");
+        text.setSpan(new android.text.style.RelativeSizeSpan(.52f),8,text.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        text.setSpan(new android.text.style.ForegroundColorSpan(0x99CFEFF7),8,text.length(),android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        brand.setText(text);
+        brand.setLineSpacing(0f,1.05f);
+    }
     private void highlightTabs(){
         int active=route.index();
         for(int i=0;i<navTabs.size();i++){
@@ -225,7 +245,7 @@ public final class MainActivity extends Activity {
 
     private void buildSearchOverlay(){
         searchOverlay=new FrameLayout(this);searchOverlay.setVisibility(View.GONE);searchOverlay.setAlpha(0f);
-        searchOverlay.setBackgroundColor(0x77000812);
+        searchOverlay.setBackgroundColor(0x5C000812);
         searchOverlay.setOnClickListener(v->closeSearch());
         LinearLayout card=new LinearLayout(this);searchCard=card;card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(18),dp(16),dp(18),dp(16));card.setBackground(glass(30));
@@ -235,7 +255,7 @@ public final class MainActivity extends Activity {
         suggestionBox=new LinearLayout(this);suggestionBox.setOrientation(LinearLayout.VERTICAL);
         card.addView(suggestionBox,new LinearLayout.LayoutParams(-1,-2));
         FrameLayout.LayoutParams size=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP);
-        size.leftMargin=dp(18);size.rightMargin=dp(18);size.topMargin=dp(168);
+        size.leftMargin=dp(14);size.rightMargin=dp(14);size.topMargin=dp(132);
         searchOverlay.addView(card,size);
         root.addView(searchOverlay,new FrameLayout.LayoutParams(-1,-1));
     }
@@ -270,7 +290,7 @@ public final class MainActivity extends Activity {
         songPage.back();showOnline();pages.search(clean);flip();
     }
     private void openSearch(){
-        if(pullHint!=null){pullHint.setVisibility(View.GONE);getSharedPreferences("mobile",0).edit().putBoolean("searchHintSeen",true).apply();}
+        getSharedPreferences("mobile",0).edit().putBoolean("searchHintSeen",true).apply();if(brandView!=null)brandView.setText("PHS Radio");
         searchOverlay.setVisibility(View.VISIBLE);
         searchOverlay.animate().alpha(1f).setDuration(180).start();
         searchField.requestFocus();
