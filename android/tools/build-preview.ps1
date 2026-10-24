@@ -25,7 +25,7 @@ $manifest=$manifest.Replace('<manifest xmlns:android=','<manifest package="io.gi
 $manifestFile=Join-Path $build 'AndroidManifest.xml'
 [IO.File]::WriteAllText($manifestFile,$manifest,[Text.UTF8Encoding]::new($false))
 $unsigned=Join-Path $build 'unsigned.apk'
-Invoke-Tool $aapt @('link','-I',$androidJar,'--manifest',$manifestFile,'--java',(Join-Path $build 'generated'),'--min-sdk-version','28','--target-sdk-version','35','--version-code','15','--version-name','0.1.14-preview','-o',$unsigned,$compiled)
+Invoke-Tool $aapt @('link','-I',$androidJar,'--manifest',$manifestFile,'--java',(Join-Path $build 'generated'),'--min-sdk-version','28','--target-sdk-version','35','--version-code','16','--version-name','0.1.15-preview','-o',$unsigned,$compiled)
 $qrJar=Join-Path $project 'app\libs\core-3.5.3.jar'
 $sources=@(Get-ChildItem -LiteralPath (Join-Path $project 'app\src\main\java'),(Join-Path $build 'generated') -File -Recurse -Filter '*.java'|ForEach-Object{$_.FullName})
 Invoke-Tool (Join-Path $jdk 'javac.exe') (@('--release','17','-encoding','UTF-8','-classpath',($androidJar+';'+$qrJar),'-d',(Join-Path $build 'classes'))+$sources)
@@ -41,7 +41,7 @@ $key=Join-Path $tools 'preview.keystore'
 if(-not(Test-Path -LiteralPath $key)){Invoke-Tool (Join-Path $jdk 'keytool.exe') @('-genkeypair','-keystore',$key,'-storepass','android','-keypass','android','-alias','androiddebugkey','-keyalg','RSA','-keysize','2048','-validity','3650','-dname','CN=PHS Radio Android Preview,O=PHS Radio,C=JP')}
 $output=Join-Path $project 'app\build\outputs\apk\preview'
 [IO.Directory]::CreateDirectory($output)|Out-Null
-$apk=Join-Path $output 'PHS-Radio-Android-0.1.14-preview.apk'
+$apk=Join-Path $output 'PHS-Radio-Android-0.1.15-preview.apk'
 Invoke-Tool $java @('-jar',(Join-Path $buildTools 'lib\apksigner.jar'),'sign','--ks',$key,'--ks-key-alias','androiddebugkey','--ks-pass','pass:android','--key-pass','pass:android','--out',$apk,$aligned)
 Invoke-Tool $java @('-jar',(Join-Path $buildTools 'lib\apksigner.jar'),'verify','--verbose',$apk)
 Invoke-Tool (Join-Path $buildTools 'zipalign.exe') @('-c','4',$apk)

@@ -48,6 +48,8 @@ public final class MainActivity extends Activity {
     private EditText searchField;
     private LinearLayout searchCard;
     private LinearLayout suggestionBox;
+    private final java.util.List<Button> navTabs=new ArrayList<>();
+    private TextView pullHint;
     private final java.util.List<View> topParts=new ArrayList<>();
     private EditText headerSearch;
     private float downX,downY;
@@ -86,7 +88,11 @@ public final class MainActivity extends Activity {
         });
         meteor=new PlayMeteor(this);root.addView(meteor,new FrameLayout.LayoutParams(-1,-1));
         setContentView(root);
-        LinearLayout header=row();header.setGravity(Gravity.CENTER_VERTICAL);
+        pullHint=text("↓  下拉打开搜索",11,false);
+        pullHint.setGravity(Gravity.CENTER);
+        pullHint.setTextColor(0x99CFEFF7);
+        content.addView(pullHint,new LinearLayout.LayoutParams(-1,dp(18)));
+        if(getSharedPreferences("mobile",0).getBoolean("searchHintSeen",false))pullHint.setVisibility(View.GONE);        LinearLayout header=row();header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.logo_phs);header.addView(logo,new LinearLayout.LayoutParams(dp(40),dp(40)));logo.setOnClickListener(v->v.animate().rotationBy(360).scaleX(.85f).scaleY(.85f).setDuration(250).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator(3)).setDuration(400).start()).start());
         TextView brand=text("PHS Radio",19,true);brand.setOnClickListener(v->{v.animate().rotationBy(360).scaleX(1.08f).scaleY(.94f).setDuration(330).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator()).setDuration(300).start()).start();});header.addView(brand,new LinearLayout.LayoutParams(0,dp(54),1));
         Button account=button("账号",()->accounts.show());header.addView(account,new LinearLayout.LayoutParams(dp(68),dp(46)));
@@ -97,7 +103,7 @@ public final class MainActivity extends Activity {
         LinearLayout bodyRow=row();content.addView(bodyRow,new LinearLayout.LayoutParams(-1,0,1));pageParts.add(bodyRow);FrameLayout body=new FrameLayout(this);bodyRow.addView(body,new LinearLayout.LayoutParams(0,-1,1));sideVolume=new VerticalVolume(this,value->command(new Intent(this,PlaybackService.class).setAction("volume").putExtra("volume",value),false));sideVolume.level(getSharedPreferences("mobile",0).getFloat("volume",1));LinearLayout.LayoutParams rail=new LinearLayout.LayoutParams(dp(32),dp(168));rail.gravity=Gravity.CENTER_VERTICAL;rail.leftMargin=dp(6);bodyRow.addView(sideVolume,rail);sideVolume.setVisibility(View.GONE);onlineHost=new FrameLayout(this);body.addView(onlineHost,new FrameLayout.LayoutParams(-1,-1));
         localScreen=new LinearLayout(this);localScreen.setOrientation(1);localScreen.setVisibility(View.GONE);body.addView(localScreen,new FrameLayout.LayoutParams(-1,-1));
         pages=new OnlinePages(this,onlineHost,()->queue());pages.onCentre=this::selectCentre;pages.onConnect=()->accounts.show();pages.onRouteSwipe=dx->{if(!route.swipe(dx))return false;lyricRequested=false;renderRoute();onlineHost.setTranslationX(dx<0?dp(38):-dp(38));onlineHost.setAlpha(.6f);onlineHost.animate().translationX(0).alpha(1).setDuration(240).start();return true;};
-        String[] tabs={"酷狗歌单","酷狗推荐","唱片歌词","网易推荐","网易歌单"};for(int i=0;i<tabs.length;i++){final int selected=i;Button tab=button(tabs[i],()->{searchHandler.removeCallbacksAndMessages(null);lyricRequested=false;route.select(selected);renderRoute();});tab.setTextSize(11);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(42),1));}
+        String[] tabs={"酷狗歌单","酷狗推荐","唱片歌词","网易推荐","网易歌单"};for(int i=0;i<tabs.length;i++){final int selected=i;Button tab=button(tabs[i],()->{searchHandler.removeCallbacksAndMessages(null);lyricRequested=false;route.select(selected);renderRoute();});tab.setTextSize(11);navTabs.add(tab);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(42),1));}
         summary=text("本地音乐",13,false);localScreen.addView(summary);localScreen.addView(button("导入本地音乐",()->choose(MUSIC,"audio/*")),new LinearLayout.LayoutParams(-1,dp(44)));
         ListView list=new ListView(this);list.setBackgroundColor(Color.TRANSPARENT);list.setDivider(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));list.setDividerHeight(dp(9));
         adapter=new BaseAdapter(){public int getCount(){return visible.size();}public Object getItem(int n){return titles.get(visible.get(n));}public long getItemId(int n){return visible.get(n);}public View getView(int n,View recycled,ViewGroup parent){GlassRow row;TextView label;if(recycled instanceof GlassRow){row=(GlassRow)recycled;label=(TextView)row.getChildAt(0);}else{row=new GlassRow(MainActivity.this);row.setPadding(dp(16),dp(10),dp(16),dp(10));label=text("",15,false);label.setSingleLine();label.setEllipsize(TextUtils.TruncateAt.END);label.setGravity(Gravity.CENTER_VERTICAL);row.addView(label,new LinearLayout.LayoutParams(-1,-2));}label.setText(titles.get(visible.get(n)));return row;}};
@@ -185,6 +191,29 @@ public final class MainActivity extends Activity {
     private void selectCentre(){lyricRequested=false;route.select(HomeRoute.CENTRE);renderRoute();}
     private void selectLyrics(){lyricRequested=true;route.select(HomeRoute.CENTRE);renderRoute();}
     /** Whole-page transition: header, search row, tabs and body slide together. */
+    /** Marks the tab that owns the current page, and pulses it once. */
+    private void highlightTabs(){
+        int active=route.index();
+        for(int i=0;i<navTabs.size();i++){
+            Button tab=navTabs.get(i);
+            boolean on=i==active;
+            tab.setBackground(on?glassActive(22):glass(22));
+            tab.setTextColor(on?0xFFFFFFFF:0xFFF0FCFF);
+            if(on){
+                tab.setScaleX(.94f);tab.setScaleY(.94f);
+                tab.animate().scaleX(1f).scaleY(1f).setDuration(240)
+                    .setInterpolator(new android.view.animation.OvershootInterpolator(2.5f)).start();
+            }
+        }
+    }
+
+    private GradientDrawable glassActive(int radius){
+        GradientDrawable shape=new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xBB6FD6E8,0xAA2E6C8C,0xCC1A3B57});
+        shape.setCornerRadius(dp(radius));
+        shape.setStroke(dp(1.4f),0xCCDFFAFF);
+        return shape;
+    }
     private void flip(){
         if(pageParts.isEmpty())return;
         for(View part:pageParts){
@@ -241,6 +270,7 @@ public final class MainActivity extends Activity {
         songPage.back();showOnline();pages.search(clean);flip();
     }
     private void openSearch(){
+        if(pullHint!=null){pullHint.setVisibility(View.GONE);getSharedPreferences("mobile",0).edit().putBoolean("searchHintSeen",true).apply();}
         searchOverlay.setVisibility(View.VISIBLE);
         searchOverlay.animate().alpha(1f).setDuration(180).start();
         searchField.requestFocus();
@@ -254,7 +284,7 @@ public final class MainActivity extends Activity {
                 .hideSoftInputFromWindow(searchField.getWindowToken(),0);
         }).start();
     }
-    private void renderRoute(){flip();songPage.mode(lyricRequested);showOnline();songPage.back();if(route.index()==0)pages.playlists("kugou");else if(route.index()==1)pages.home("kugou");else if(route.index()==2)pages.songPage(songPage);else if(route.index()==3)pages.home("netease");else pages.playlists("netease");}
+    private void renderRoute(){flip();highlightTabs();songPage.mode(lyricRequested);showOnline();songPage.back();if(route.index()==0)pages.playlists("kugou");else if(route.index()==1)pages.home("kugou");else if(route.index()==2)pages.songPage(songPage);else if(route.index()==3)pages.home("netease");else pages.playlists("netease");}
     private void showOnline(){isLocal=false;onlineHost.setVisibility(View.VISIBLE);localScreen.setVisibility(View.GONE);}
     @Override public void onBackPressed(){if(songPage.showingLyrics()){selectCentre();return;}if(isLocal){selectCentre();}else if(pages.isRoutePage()){if(route.index()!=2)selectCentre();else super.onBackPressed();}else if(!pages.back())selectCentre();}
     private void createDock(){
