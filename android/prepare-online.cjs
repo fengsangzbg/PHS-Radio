@@ -1,0 +1,4 @@
+const fs=require('fs'),p=__dirname+'/app/src/main/java/io/github/fengsangzbg/phsradio/mobile/MusicAccounts.java';let s=fs.readFileSync(p,'utf8');
+s=s.replace('private final Activity activity;','private final Activity activity;\n    private final Context context;');s=s.replace('MusicAccounts(Activity a){activity=a;}','MusicAccounts(Context a){context=a;activity=a instanceof Activity?(Activity)a:null;}');s=s.replaceAll('activity.getSharedPreferences','context.getSharedPreferences');s=s.replace('private JSONObject restore(','JSONObject restore(').replace('private JSONObject neAuthorized(','JSONObject neAuthorized(');
+s=s.replace('if(saved)action(panel,"查看"+name(platform)+"在线歌单",()->{dialog.dismiss();library(platform);});','');s=s.replace('可读取账号歌单；在线播放仍在接入中。','登录完成后返回首页，可打开平台歌单和每日推荐。');
+fs.writeFileSync(p,s);

@@ -1,0 +1,15 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'io.github.fengsangzbg.phsradio.mobile'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'io.github.fengsangzbg.phsradio.mobile'
+        minSdk 28
+        targetSdk 35
+        versionCode 6
+        versionName '0.1.5-preview'
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+
+dependencies { implementation files('libs/core-3.5.3.jar') }

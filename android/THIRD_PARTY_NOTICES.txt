@@ -1,0 +1,10 @@
+ZXing Core 3.5.3
+Copyright ZXing authors
+Apache License 2.0
+https://github.com/zxing/zxing
+https://www.apache.org/licenses/LICENSE-2.0
+
+Platform login protocol references:
+https://github.com/MakcRe/KuGouMusicApi
+https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced
+Project license: GPL-3.0 (see Windows project LICENSE).

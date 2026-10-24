@@ -1,0 +1,1 @@
+const fs=require('fs'),p=__dirname+'/app/src/main/java/io/github/fengsangzbg/phsradio/mobile/OnlinePages.java';let s=fs.readFileSync(p,'utf8').replace('if(api.logged(platform))result=api.search(platform,query,0);else failure=name(platform)+"未登录";','result=api.search(platform,query,0);');fs.writeFileSync(p,s);

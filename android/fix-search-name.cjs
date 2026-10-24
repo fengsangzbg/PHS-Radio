@@ -1,0 +1,1 @@
+const fs=require('fs'),p=__dirname+'/app/src/main/java/io/github/fengsangzbg/phsradio/mobile/OnlinePages.java';let s=fs.readFileSync(p,'utf8').replace('EditText search=search(','EditText search=searchBox(').replace('private EditText search(String hint)','private EditText searchBox(String hint)');fs.writeFileSync(p,s);
