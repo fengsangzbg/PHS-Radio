@@ -53,9 +53,10 @@ public final class MainActivity extends Activity {
     private boolean dragBlocked;
     private TextView pullHint;
     private JSONObject currentTrack;
-    private Button likeButton;
+    private CrystalHeartView likeButton;
     private Button qualityButton;
     private int qualityIndex;
+    private long lastPosition;
     private final java.util.List<View> topParts=new ArrayList<>();
     private EditText headerSearch;
     private float downX,downY;
@@ -72,10 +73,10 @@ public final class MainActivity extends Activity {
         play.setText(i.getBooleanExtra("playing",false)?"Ⅱ":"▶");
         mode.setText(new String[]{"顺序","随机","单曲循环"}[Math.floorMod(i.getIntExtra("playMode",0),3)]);
         boolean playing=i.getBooleanExtra("playing",false);if(playing&&!wasPlaying&&getSharedPreferences("mobile",0).getBoolean("meteors",true))meteor.flash("fire".equals(wallpaper.mode()));wasPlaying=playing;
-        try{String raw=i.getStringExtra("track");currentTrack=(raw==null||raw.isEmpty())?null:new JSONObject(raw);if(currentTrack!=null&&likeButton!=null)likeButton.setText(isLiked(currentTrack)?"♥":"♡");}catch(Exception ignored){}songPage.online(i.getStringExtra("track"),i.getStringExtra("lyrics"));
+        try{String raw=i.getStringExtra("track");currentTrack=(raw==null||raw.isEmpty())?null:new JSONObject(raw);if(currentTrack!=null&&likeButton!=null)likeButton.setLit(isLiked(currentTrack));}catch(Exception ignored){}songPage.online(i.getStringExtra("track"),i.getStringExtra("lyrics"));
         songPage.lyricStatus(i.getStringExtra("lyricState"),i.getStringExtra("lyricError"));volumeValue=i.getFloatExtra("volume",1);if(sideVolume!=null)sideVolume.level(volumeValue);
         songPage.state(i.getStringExtra("uri")==null?"":i.getStringExtra("uri"),i.getStringExtra("title"),i.getLongExtra("position",0),playing);
-        duration=i.getLongExtra("duration",0);long position=i.getLongExtra("position",0);
+        duration=i.getLongExtra("duration",0);long position=i.getLongExtra("position",0);lastPosition=position;
         if(!seeking)progress.setProgress(duration>0?(int)(position*1000/duration):0);
         time.setText(format(position)+" / "+format(duration));
         String error=i.getStringExtra("error");if(error!=null&&!error.isEmpty())Toast.makeText(MainActivity.this,error,Toast.LENGTH_LONG).show();
@@ -378,9 +379,9 @@ public final class MainActivity extends Activity {
     @Override public void onBackPressed(){if(songPage.showingLyrics()){selectCentre();return;}if(isLocal){selectCentre();}else if(pages.isRoutePage()){if(route.index()!=2)selectCentre();else super.onBackPressed();}else if(!pages.back())selectCentre();}
     private void createDock(){
         LinearLayout dock=new LinearLayout(this);dock.setOrientation(1);dock.setPadding(dp(10),dp(6),dp(10),dp(4));dock.setBackground(glass(26));
-        now=text("选择一首音乐",15,true);now.setSingleLine();now.setEllipsize(TextUtils.TruncateAt.END);now.setOnClickListener(v->selectCentre());LinearLayout titleRow=row();titleRow.setGravity(Gravity.CENTER_VERTICAL);titleRow.addView(now,new LinearLayout.LayoutParams(0,dp(26),1));likeButton=button("♡",()->toggleLike());likeButton.setTextSize(16);titleRow.addView(likeButton,new LinearLayout.LayoutParams(dp(42),dp(30)));Button share=button("分享",()->shareCurrent());share.setTextSize(12);titleRow.addView(share,new LinearLayout.LayoutParams(dp(54),dp(30)));dock.addView(titleRow);
+        now=text("选择一首音乐",15,true);now.setSingleLine();now.setEllipsize(TextUtils.TruncateAt.END);now.setOnClickListener(v->selectCentre());LinearLayout titleRow=row();titleRow.setGravity(Gravity.CENTER_VERTICAL);titleRow.addView(now,new LinearLayout.LayoutParams(0,dp(26),1));likeButton=new CrystalHeartView(this);likeButton.setOnClickListener(v->toggleLike());titleRow.addView(likeButton,new LinearLayout.LayoutParams(dp(40),dp(34)));Button share=button("分享",()->shareCurrent());share.setTextSize(12);titleRow.addView(share,new LinearLayout.LayoutParams(dp(54),dp(30)));dock.addView(titleRow);
         LinearLayout transport=row();transport.setGravity(Gravity.CENTER_VERTICAL);mode=button("顺序",()->send("shuffle"));mode.setTextSize(12);transport.addView(mode,new LinearLayout.LayoutParams(0,dp(40),1.3f));transport.addView(button("❮",()->send("previous")),new LinearLayout.LayoutParams(0,dp(40),.8f));play=button("▶",()->send("toggle"));transport.addView(play,new LinearLayout.LayoutParams(0,dp(44),1));transport.addView(button("❯",()->send("next")),new LinearLayout.LayoutParams(0,dp(40),.8f));transport.addView(button("停止",()->send("stop")),new LinearLayout.LayoutParams(0,dp(40),1));transport.addView(button("歌词",()->selectLyrics()),new LinearLayout.LayoutParams(0,dp(40),1));dock.addView(transport);
-        LinearLayout progressRow=row();progressRow.setGravity(Gravity.CENTER_VERTICAL);time=text("0:00 / 0:00",10,false);time.setTextColor(0xFFB2DBDE);progressRow.addView(time,new LinearLayout.LayoutParams(dp(85),dp(28)));progress=new SeekBar(this);progress.setMax(1000);progressRow.addView(progress,new LinearLayout.LayoutParams(0,dp(30),1));qualityButton=button("音质·标准",()->cycleQuality());qualityButton.setTextSize(11);progressRow.addView(qualityButton,new LinearLayout.LayoutParams(dp(78),dp(30)));dock.addView(progressRow);
+        LinearLayout progressRow=row();progressRow.setGravity(Gravity.CENTER_VERTICAL);time=text("0:00 / 0:00",10,false);time.setTextColor(0xFFB2DBDE);progressRow.addView(time,new LinearLayout.LayoutParams(dp(85),dp(28)));progress=new SeekBar(this);progress.setMax(1000);progressRow.addView(progress,new LinearLayout.LayoutParams(0,dp(30),1));qualityIndex=getSharedPreferences("mobile",0).getInt("qualityIndex",0);qualityButton=button("音质·"+qualityLabels[qualityIndex],()->cycleQuality());qualityButton.setTextSize(11);progressRow.addView(qualityButton,new LinearLayout.LayoutParams(dp(78),dp(30)));dock.addView(progressRow);
         progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar s,int p,boolean user){}public void onStartTrackingTouch(SeekBar s){seeking=true;}public void onStopTrackingTouch(SeekBar s){seeking=false;command(new Intent(MainActivity.this,PlaybackService.class).setAction("seek").putExtra("position",duration*s.getProgress()/1000),false);}});
         LinearLayout.LayoutParams size=new LinearLayout.LayoutParams(-1,-2);size.topMargin=dp(6);content.addView(dock,size);
     }
@@ -389,9 +390,10 @@ public final class MainActivity extends Activity {
 
     private void cycleQuality(){
         qualityIndex=(qualityIndex+1)%qualityLabels.length;
+        getSharedPreferences("mobile",0).edit().putInt("qualityIndex",qualityIndex).apply();
         qualityButton.setText("音质·"+qualityLabels[qualityIndex]);
         command(new Intent(MainActivity.this,PlaybackService.class)
-                .setAction("quality").putExtra("quality",qualityKeys[qualityIndex]),false);
+                .setAction("quality").putExtra("quality",qualityKeys[qualityIndex]).putExtra("position",(int)lastPosition),false);
         Toast.makeText(this,"音质切换为"+qualityLabels[qualityIndex],Toast.LENGTH_SHORT).show();
     }
 
@@ -428,15 +430,19 @@ public final class MainActivity extends Activity {
         JSONArray array=new JSONArray();
         for(JSONObject item:list)array.put(item);
         getSharedPreferences("mobile",0).edit().putString("favorites",array.toString()).apply();
-        if(likeButton!=null)likeButton.setText(isLiked(currentTrack)?"♥":"♡");
+        if(likeButton!=null)likeButton.setLit(isLiked(currentTrack));
         if(!removed)playHeart();
         Toast.makeText(this,removed?"已取消收藏":"已收藏到「我喜欢的音乐」",Toast.LENGTH_SHORT).show();
     }
 
     private void playHeart(){
-        final CrystalHeart heart=new CrystalHeart(this,null);
-        root.addView(heart,new FrameLayout.LayoutParams(dp(160),dp(160),Gravity.CENTER));
-        heart.postDelayed(()->root.removeView(heart),1250);
+        final CrystalHeartView heart=new CrystalHeartView(this);
+        heart.celebrate();
+        FrameLayout.LayoutParams size=new FrameLayout.LayoutParams(dp(200),dp(200),Gravity.CENTER);
+        root.addView(heart,size);
+        heart.setScaleX(.4f);heart.setScaleY(.4f);heart.animate().scaleX(1.15f).scaleY(1.15f).setDuration(320)
+            .setInterpolator(new android.view.animation.OvershootInterpolator(2f))
+            .withEndAction(()->heart.animate().alpha(0f).setDuration(420).withEndAction(()->root.removeView(heart)).start()).start();
     }
 
     private String shareUrl(JSONObject track){

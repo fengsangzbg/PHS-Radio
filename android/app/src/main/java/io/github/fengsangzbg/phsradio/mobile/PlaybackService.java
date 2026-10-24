@@ -75,7 +75,7 @@ public final class PlaybackService extends Service {
         else if("previous".equals(action))next(-1);
         else if("lyrics".equals(action)){if(index>=0&&index<tracks.size()&&uris.get(index).startsWith("phs://"))requestLyrics(tracks.get(index));}
         else if("seek".equals(action))seek(intent.getLongExtra("position",0));
-        else if("quality".equals(action)){String q=intent.getStringExtra("quality");if(q!=null&&online!=null)online.quality=q;}
+        else if("quality".equals(action)){String q=intent.getStringExtra("quality");if(q!=null&&online!=null)online.quality=q;if(index>=0&&index<tracks.size()){final int resume=Math.max(0,intent.getIntExtra("position",0));load(index);handler.postDelayed(()->seek(resume),1100);}}
         else if("volume".equals(action)){
             volume=Math.max(0f,Math.min(1f,intent.getFloatExtra("volume",1f)));
             getSharedPreferences("mobile",0).edit().putFloat("volume",volume).apply();applyVolume();publish("");
