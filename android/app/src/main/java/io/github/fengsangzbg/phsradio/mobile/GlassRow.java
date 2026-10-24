@@ -18,10 +18,18 @@ final class GlassRow extends LinearLayout {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF bounds = new RectF();
+    private static float pulse;
+    private static long pulseAt;
     private long clock;
     private float phase;
     private float press;
     private boolean pressed;
+
+    /** Called while a list scrolls: rows squash like jelly and settle back. */
+    static void kick(float amount) {
+        pulse = Math.min(1f, amount);
+        pulseAt = SystemClock.uptimeMillis();
+    }
 
     GlassRow(Context context) {
         super(context);
@@ -71,12 +79,16 @@ final class GlassRow extends LinearLayout {
         rim.inset(dp(.5f), dp(.5f));
         canvas.drawRoundRect(rim, radius, radius, stroke);
 
-        // Squash on press, like the desktop jelly buttons.
+        // Squash on press plus the scroll jelly: both are canvas transforms, so a
+        // recycled row deforms without relayout.
+        float jellyAge = (SystemClock.uptimeMillis() - pulseAt) / 260f;
+        float jelly = pulse * Math.max(0f, 1f - jellyAge);
         canvas.save();
-        float squash = 1f - press * .035f;
-        canvas.scale(1f + press * .012f, squash, w / 2f, h / 2f);
+        float squash = 1f - press * .035f - jelly * .045f;
+        canvas.scale(1f + press * .012f + jelly * .020f, squash, w / 2f, h / 2f);
         super.dispatchDraw(canvas);
         canvas.restore();
+        if (jelly > .01f) postInvalidateOnAnimation();
 
         if (isShown()) postInvalidateOnAnimation();
     }

@@ -43,6 +43,11 @@ public final class MainActivity extends Activity {
     private SeekBar progress;
     private BaseAdapter adapter;
     private AquariumEntrance entrance;
+    private final java.util.List<View> pageParts=new ArrayList<>();
+    private FrameLayout searchOverlay;
+    private EditText searchField;
+    private float pullStart;
+    private boolean pulling;
     private boolean sideRailVisible;
     private float volumeValue=1;
     private long duration;
@@ -78,11 +83,11 @@ public final class MainActivity extends Activity {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.logo_phs);header.addView(logo,new LinearLayout.LayoutParams(dp(40),dp(40)));logo.setOnClickListener(v->v.animate().rotationBy(360).scaleX(.85f).scaleY(.85f).setDuration(250).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator(3)).setDuration(400).start()).start());
         TextView brand=text("PHS Radio",19,true);brand.setOnClickListener(v->{v.animate().rotationBy(360).scaleX(1.08f).scaleY(.94f).setDuration(330).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator()).setDuration(300).start()).start();});header.addView(brand,new LinearLayout.LayoutParams(0,dp(54),1));
         Button account=button("账号",()->accounts.show());header.addView(account,new LinearLayout.LayoutParams(dp(68),dp(46)));
-        Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);
+        Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);pageParts.add(header);
         LinearLayout actions=row();actions.setPadding(0,dp(10),0,dp(8));
-        EditText search=new EditText(this);search.setSingleLine();search.setTextColor(Color.WHITE);search.setHintTextColor(0xFFA8CACF);search.setHint("搜索本地、酷狗、网易云歌曲或歌手");search.setTextSize(14);search.setPadding(dp(16),0,dp(12),0);search.setBackground(glass(24));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);actions.addView(search,new LinearLayout.LayoutParams(0,dp(46),1));content.addView(actions);
-        LinearLayout nav=row();content.addView(nav);
-        LinearLayout bodyRow=row();content.addView(bodyRow,new LinearLayout.LayoutParams(-1,0,1));FrameLayout body=new FrameLayout(this);bodyRow.addView(body,new LinearLayout.LayoutParams(0,-1,1));sideVolume=new VerticalVolume(this,value->command(new Intent(this,PlaybackService.class).setAction("volume").putExtra("volume",value),false));sideVolume.level(getSharedPreferences("mobile",0).getFloat("volume",1));LinearLayout.LayoutParams rail=new LinearLayout.LayoutParams(dp(32),dp(168));rail.gravity=Gravity.CENTER_VERTICAL;rail.leftMargin=dp(6);bodyRow.addView(sideVolume,rail);sideVolume.setVisibility(View.GONE);onlineHost=new FrameLayout(this);body.addView(onlineHost,new FrameLayout.LayoutParams(-1,-1));
+        EditText search=new EditText(this);search.setSingleLine();search.setTextColor(Color.WHITE);search.setHintTextColor(0xFFA8CACF);search.setHint("搜索本地、酷狗、网易云歌曲或歌手");search.setTextSize(14);search.setPadding(dp(16),0,dp(12),0);search.setBackground(glass(24));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);actions.addView(search,new LinearLayout.LayoutParams(0,dp(46),1));content.addView(actions);pageParts.add(actions);
+        LinearLayout nav=row();content.addView(nav);pageParts.add(nav);
+        LinearLayout bodyRow=row();content.addView(bodyRow,new LinearLayout.LayoutParams(-1,0,1));pageParts.add(bodyRow);FrameLayout body=new FrameLayout(this);bodyRow.addView(body,new LinearLayout.LayoutParams(0,-1,1));sideVolume=new VerticalVolume(this,value->command(new Intent(this,PlaybackService.class).setAction("volume").putExtra("volume",value),false));sideVolume.level(getSharedPreferences("mobile",0).getFloat("volume",1));LinearLayout.LayoutParams rail=new LinearLayout.LayoutParams(dp(32),dp(168));rail.gravity=Gravity.CENTER_VERTICAL;rail.leftMargin=dp(6);bodyRow.addView(sideVolume,rail);sideVolume.setVisibility(View.GONE);onlineHost=new FrameLayout(this);body.addView(onlineHost,new FrameLayout.LayoutParams(-1,-1));
         localScreen=new LinearLayout(this);localScreen.setOrientation(1);localScreen.setVisibility(View.GONE);body.addView(localScreen,new FrameLayout.LayoutParams(-1,-1));
         pages=new OnlinePages(this,onlineHost,()->queue());pages.onCentre=this::selectCentre;pages.onConnect=()->accounts.show();pages.onRouteSwipe=dx->{if(!route.swipe(dx))return false;lyricRequested=false;renderRoute();onlineHost.setTranslationX(dx<0?dp(38):-dp(38));onlineHost.setAlpha(.6f);onlineHost.animate().translationX(0).alpha(1).setDuration(240).start();return true;};
         String[] tabs={"酷狗歌单","酷狗推荐","唱片歌词","网易推荐","网易歌单"};for(int i=0;i<tabs.length;i++){final int selected=i;Button tab=button(tabs[i],()->{searchHandler.removeCallbacksAndMessages(null);lyricRequested=false;route.select(selected);renderRoute();});tab.setTextSize(11);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(42),1));}
@@ -96,11 +101,25 @@ public final class MainActivity extends Activity {
         createDock();songPage.home(content);restoreQueue();handleShare(getIntent());
         // The aquarium scene sits on top of the finished UI, exactly like the
         // Windows build: tap to zoom in, then drop the view entirely.
+        buildSearchOverlay();
         entrance=new AquariumEntrance(this);
         entrance.onEntered=()->{root.removeView(entrance);entrance=null;};
         root.addView(entrance,new FrameLayout.LayoutParams(-1,-1));
     }
     @Override public boolean dispatchTouchEvent(MotionEvent e){
+        if(searchOverlay!=null){
+            if(e.getActionMasked()==MotionEvent.ACTION_DOWN){
+                pullStart=e.getY();pulling=e.getY()<dp(120)&&searchOverlay.getVisibility()!=View.VISIBLE;
+            }else if(pulling&&e.getActionMasked()==MotionEvent.ACTION_MOVE){
+                float dy=e.getY()-pullStart;
+                if(dy>dp(10)){float f=Math.min(1f,dy/dp(180));searchOverlay.setVisibility(View.VISIBLE);searchOverlay.setAlpha(f);content.setTranslationY(dy*.35f);return true;}
+            }else if(pulling&&(e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_CANCEL)){
+                float dy=e.getY()-pullStart;pulling=false;
+                content.animate().translationY(0).setDuration(200).start();
+                if(dy>dp(90))openSearch();else closeSearch();
+                return true;
+            }
+        }
         if(e.getActionMasked()==MotionEvent.ACTION_DOWN){swipeX=e.getX();swipeY=e.getY();swipeConsumed=false;swipeBlocked=isLocal||content==null||content.getVisibility()!=View.VISIBLE||inHorizontalScroll(getWindow().getDecorView(),e.getRawX(),e.getRawY());}
         if(e.getActionMasked()==MotionEvent.ACTION_MOVE&&!swipeBlocked&&!swipeConsumed&&pages!=null){float dx=e.getX()-swipeX,dy=e.getY()-swipeY;if(Math.abs(dx)>dp(84)&&Math.abs(dy)<Math.abs(dx)*.45f){if(pages.swipe(dx)){MotionEvent cancel=MotionEvent.obtain(e);cancel.setAction(MotionEvent.ACTION_CANCEL);super.dispatchTouchEvent(cancel);cancel.recycle();swipeConsumed=true;return true;}}}
         if(swipeConsumed){if(e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_CANCEL)swipeConsumed=false;return true;}return super.dispatchTouchEvent(e);
@@ -108,7 +127,56 @@ public final class MainActivity extends Activity {
     private boolean inHorizontalScroll(View view,float x,float y){if(view.getVisibility()!=View.VISIBLE)return false;int[] at=new int[2];view.getLocationOnScreen(at);if(x<at[0]||x>at[0]+view.getWidth()||y<at[1]||y>at[1]+view.getHeight())return false;if(view instanceof HorizontalScrollView||view instanceof SeekBar||view instanceof EditText||view instanceof VerticalVolume)return true;if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=group.getChildCount()-1;i>=0;i--)if(inHorizontalScroll(group.getChildAt(i),x,y))return true;}return false;}
     private void selectCentre(){lyricRequested=false;route.select(HomeRoute.CENTRE);renderRoute();}
     private void selectLyrics(){lyricRequested=true;route.select(HomeRoute.CENTRE);renderRoute();}
-    private void renderRoute(){songPage.mode(lyricRequested);showOnline();songPage.back();if(route.index()==0)pages.playlists("kugou");else if(route.index()==1)pages.home("kugou");else if(route.index()==2)pages.songPage(songPage);else if(route.index()==3)pages.home("netease");else pages.playlists("netease");}
+    /** Whole-page transition: header, search row, tabs and body slide together. */
+    private void flip(){
+        if(pageParts.isEmpty())return;
+        for(View part:pageParts){
+            part.setTranslationX(dp(28));part.setAlpha(.35f);
+            part.animate().translationX(0).alpha(1f).setDuration(260)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+        }
+    }
+
+    private void buildSearchOverlay(){
+        searchOverlay=new FrameLayout(this);searchOverlay.setVisibility(View.GONE);searchOverlay.setAlpha(0f);
+        searchOverlay.setBackgroundColor(0x99000812);
+        searchOverlay.setOnClickListener(v->closeSearch());
+        LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(18),dp(16),dp(18),dp(16));card.setBackground(glass(30));
+        card.addView(text("搜索",18,true));
+        searchField=new EditText(this);searchField.setSingleLine();searchField.setTextColor(Color.WHITE);
+        searchField.setHintTextColor(0xFF9CC4CE);searchField.setHint("搜歌曲、歌手或歌单");searchField.setTextSize(16);
+        searchField.setPadding(dp(14),0,dp(14),0);searchField.setBackground(glass(24));
+        card.addView(searchField,new LinearLayout.LayoutParams(-1,dp(48)));
+        searchField.setOnEditorActionListener((v,action,event)->{
+            if(action==android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH){
+                String q=searchField.getText().toString();
+                closeSearch();showOnline();pages.search(q);
+                return true;
+            }
+            return false;
+        });
+        FrameLayout.LayoutParams size=new FrameLayout.LayoutParams(-1,-2,Gravity.CENTER);
+        size.leftMargin=dp(18);size.rightMargin=dp(18);
+        searchOverlay.addView(card,size);
+        root.addView(searchOverlay,new FrameLayout.LayoutParams(-1,-1));
+    }
+
+    private void openSearch(){
+        searchOverlay.setVisibility(View.VISIBLE);
+        searchOverlay.animate().alpha(1f).setDuration(180).start();
+        searchField.requestFocus();
+        ((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(searchField,0);
+    }
+
+    private void closeSearch(){
+        searchOverlay.animate().alpha(0f).setDuration(160).withEndAction(()->{
+            searchOverlay.setVisibility(View.GONE);
+            ((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE))
+                .hideSoftInputFromWindow(searchField.getWindowToken(),0);
+        }).start();
+    }
+    private void renderRoute(){flip();songPage.mode(lyricRequested);showOnline();songPage.back();if(route.index()==0)pages.playlists("kugou");else if(route.index()==1)pages.home("kugou");else if(route.index()==2)pages.songPage(songPage);else if(route.index()==3)pages.home("netease");else pages.playlists("netease");}
     private void showOnline(){isLocal=false;onlineHost.setVisibility(View.VISIBLE);localScreen.setVisibility(View.GONE);}
     @Override public void onBackPressed(){if(songPage.showingLyrics()){selectCentre();return;}if(isLocal){selectCentre();}else if(pages.isRoutePage()){if(route.index()!=2)selectCentre();else super.onBackPressed();}else if(!pages.back())selectCentre();}
     private void createDock(){
@@ -140,9 +208,21 @@ public final class MainActivity extends Activity {
     }
     private void send(String action){if("toggle".equals(action)&&play.getText().equals("▶")&&now.getText().equals("选择一首音乐")&&!uris.isEmpty())start(0);else command(new Intent(this,PlaybackService.class).setAction(action),false);}
     private void command(Intent intent,boolean foreground){if(foreground)startForegroundService(intent);else startService(intent);}
-    private void showSettings(){
-        final Dialog dialog=new Dialog(this);
-        LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(22),dp(22),dp(22),dp(18));panel.setBackground(glass(30));
+    private Dialog glassDialog(){
+        Dialog dialog=new Dialog(this,android.R.style.Theme_Translucent_NoTitleBar);
+        Window window=dialog.getWindow();
+        if(window!=null){
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams params=window.getAttributes();
+            params.dimAmount=.42f;
+            window.setAttributes(params);
+            if(Build.VERSION.SDK_INT>=31)window.setBackgroundBlurRadius(dp(26));
+        }
+        return dialog;
+    }    private void showSettings(){
+        final Dialog dialog=glassDialog();
+        LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(22),dp(22),dp(22),dp(18));panel.setBackground(glass(34));
         panel.addView(text("设置",22,true));
         final Button rail=button(sideRailVisible?"隐藏侧边音量条":"显示侧边音量条",()->{});
         rail.setOnClickListener(v->{sideRailVisible=!sideRailVisible;sideVolume.setVisibility(sideRailVisible?View.VISIBLE:View.GONE);rail.setText(sideRailVisible?"隐藏侧边音量条":"显示侧边音量条");});
@@ -159,7 +239,7 @@ public final class MainActivity extends Activity {
         panel.addView(volume,new LinearLayout.LayoutParams(-1,dp(40)));
         dialog.setContentView(panel);dialog.show();
     }    private void showThemes(){
-        Dialog dialog=new Dialog(this);LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(22),dp(22),dp(22),dp(18));panel.setBackground(glass(30));
+        Dialog dialog=glassDialog();LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(22),dp(22),dp(22),dp(18));panel.setBackground(glass(34));
         TextView title=text("你的背景，你的节奏",22,true);panel.addView(title);TextView hint=text("在星空视频壁纸中设好桌面动态壁纸后，可在这里跟随显示。系统壁纸的声音由壁纸应用管理；导入视频在本软件内始终静音。",14,false);hint.setTextColor(0xFFC0DEE1);hint.setPadding(0,dp(14),0,dp(16));panel.addView(hint);
         addTheme(panel,"显示桌面动态壁纸",()->{wallpaper.set("system","");dialog.dismiss();});
         addTheme(panel,"打开系统动态壁纸选择器",()->{try{startActivity(new Intent(android.app.WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER));}catch(ActivityNotFoundException e){Toast.makeText(this,"请在星空视频壁纸中设置桌面壁纸",Toast.LENGTH_LONG).show();}dialog.dismiss();});
