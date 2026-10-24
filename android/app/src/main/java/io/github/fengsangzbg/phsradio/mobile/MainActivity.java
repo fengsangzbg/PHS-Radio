@@ -287,7 +287,7 @@ public final class MainActivity extends Activity {
         for(int i=0;i<navTabs.size();i++){
             Button tab=navTabs.get(i);
             boolean on=i==active;
-            tab.setBackground(on?glassActive(22):glass(22));
+            ((AeroButton)tab).setActive(on);
             tab.setTextColor(on?0xFFFFFFFF:0xFFF0FCFF);
             if(on){
                 tab.setScaleX(.94f);tab.setScaleY(.94f);
@@ -555,6 +555,6 @@ public final class MainActivity extends Activity {
     private int dp(float value){return Math.round(value*getResources().getDisplayMetrics().density);}
     private TextView text(String label,int size,boolean bold){TextView view=new TextView(this);view.setText(label);view.setTextColor(0xFFF0FCFF);view.setTextSize(size);if(bold)view.setTypeface(null,android.graphics.Typeface.BOLD);return view;}
     private GradientDrawable glass(int radius){GradientDrawable shape=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0x553C727A,0x5020304A,0x88202D43});shape.setCornerRadius(dp(radius));shape.setStroke(dp(1),0x558BDFE3);return shape;}
-    private Button button(String label,Runnable callback){Button view=new AeroButton(this);view.setText(label);view.setTextColor(0xFFF0FCFF);view.setTextSize(14);view.setAllCaps(false);view.setMinWidth(0);view.setMinimumWidth(0);view.setPadding(dp(8),0,dp(8),0);view.setBackground(glass(22));view.setOnClickListener(v->callback.run());return view;}
+    private Button button(String label,Runnable callback){Button view=new AeroButton(this);view.setText(label);view.setTextColor(0xFFF0FCFF);view.setTextSize(14);view.setAllCaps(false);view.setMinWidth(0);view.setMinimumWidth(0);view.setPadding(dp(8),0,dp(8),0);view.setOnClickListener(v->callback.run());return view;}
     private static String format(long ms){long seconds=ms/1000;return String.format(Locale.ROOT,"%d:%02d",seconds/60,seconds%60);}
 }
