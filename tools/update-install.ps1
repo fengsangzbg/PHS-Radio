@@ -23,6 +23,32 @@ $journal = [Collections.Generic.List[object]]::new()
 $replaced = [Collections.Generic.List[object]]::new()
 $utf8 = [Text.UTF8Encoding]::new($false)
 $parentProcess = $null
+function Stop-InstallRootProcesses {
+    param([string] $Root)
+    # The bundled music services (runtime\node.exe) can outlive the player and
+    # keep libcares, qwindows or ffmpeg DLLs open. Anything still running from
+    # the folder we are about to replace is stopped first, otherwise the access
+    # probe below aborts the update and leaves the old package installed.
+    if ([string]::IsNullOrEmpty($Root)) { return }
+    $prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/') + '\'
+    $self = [Diagnostics.Process]::GetCurrentProcess().Id
+    foreach ($process in [Diagnostics.Process]::GetProcesses()) {
+        if ($process.Id -eq $self) { continue }
+        try { $path = $process.MainModule.FileName } catch { continue }
+        if ([string]::IsNullOrEmpty($path)) { continue }
+        try { $full = [IO.Path]::GetFullPath($path) } catch { continue }
+        if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        try {
+            Write-UpdateLog ("Stopping {0} (pid {1}) before replacement." -f $full, $process.Id)
+            $process.Kill()
+            $null = $process.WaitForExit(5000)
+        } catch {
+            Write-UpdateLog ("Could not stop pid {0}: {1}" -f $process.Id, $_.Exception.Message)
+        }
+    }
+    Start-Sleep -Milliseconds 300
+}
+
 $restartPath = $null
 $parentExited = $false
 $rollbackComplete = $false
@@ -255,6 +281,7 @@ try {
     }
     Assert-NotCancelled
     $parentExited = $true
+    Stop-InstallRootProcesses -Root $installRoot
     Write-UpdateLog 'Player exited; backing up every existing package file before replacement.'
     foreach ($file in $files) {
         Assert-NoReparse $file.target

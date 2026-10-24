@@ -2,15 +2,15 @@
 
 <img src="resources/app_logo.svg" width="96" alt="PHS Radio 玻璃台风 P 标志">
 
-**实用且美观的 Frutiger Aero 播放器。v0.4.0 正式版重塑 Dock 播放流星，支持酷狗与网易云独立扫码登录、歌单浏览与聚合搜索。**
+**实用且美观的 Frutiger Aero 播放器。v0.4.1 正式版重塑 Dock 播放流星，支持酷狗与网易云独立扫码登录、歌单浏览与聚合搜索。**
 
 液态玻璃、水光、柔和发光与弹性回馈，让听歌界面也成为桌面的一部分。支持导入 **Wallpaper Engine 动态壁纸**，自定义背景、主题色和遮暗程度，从复古到明亮自由搭配。
 
-[下载 v0.4.0 正式版](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.4.0) · [最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest) · [反馈问题](https://github.com/fengsangzbg/PHS-Radio/issues)
+[下载 v0.4.1 正式版](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.4.1) · [最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest) · [反馈问题](https://github.com/fengsangzbg/PHS-Radio/issues)
 
 酷狗与网易云均支持登录、歌单、搜索与播放。网易云播放已由用户实测确认恢复可用；具体歌曲的音源、音质与权限仍以平台返回为准。
 
-v0.4.0 重做 Dock 播放流星。原先的绿色固定直线被替换为矢量绘制的玻璃光条：细长、带长尾、逐条错开掠过，冰蓝玻璃体配白色焦散芯与边缘色散；「火流星」保持原版固定光束不动。触发时机不变，仍然只在按下播放键后出现。
+v0.4.1 重做 Dock 播放流星。原先的绿色固定直线被替换为矢量绘制的玻璃光条：细长、带长尾、逐条错开掠过，冰蓝玻璃体配白色焦散芯与边缘色散；「火流星」保持原版固定光束不动。触发时机不变，仍然只在按下播放键后出现。
 
 ## 可以做什么
 
@@ -29,7 +29,7 @@ v0.4.0 重做 Dock 播放流星。原先的绿色固定直线被替换为矢量�
 
 ## 安装与使用
 
-1. 到 [v0.4.0 正式版发布页](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.4.0) 下载 Windows x64 完整包；也可选择[最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest)。
+1. 到 [v0.4.1 正式版发布页](https://github.com/fengsangzbg/PHS-Radio/releases/tag/v0.4.1) 下载 Windows x64 完整包；也可选择[最新稳定版](https://github.com/fengsangzbg/PHS-Radio/releases/latest)。
 2. **完整解压**后双击 `PHSRadio.exe`。保留 DLL、Qt 插件、`runtime`、`services` 等全部文件；无需另装 Qt、Node.js 或 npm。
 3. 启动时点击 MP3 上的 logo，在登录页选择酷狗或网易云并扫码；点击「完成登录」回到 MP3，再次点击 logo 进入播放器。进入后仍可通过“平台连接”管理账号，两平台可同时保持登录。
 4. 歌单会在后台逐步加载。未加载完整时可从歌单面板重试；双击歌曲即可播放。
@@ -68,14 +68,14 @@ Dock 音量只控制软件内的音乐，不改变 Windows 主音量；背景继
 cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DPHSRADIO_KUGOU_ONLY=OFF
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.4.0
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-windows.ps1 -BuildDir build -Version 0.4.1
 ```
 
 本机服务源码与依赖锁位于 `services/kugou` 和 `services/netease`，开发或重新打包前分别运行 `npm ci --prefix services/kugou --omit=dev --ignore-scripts` 和 `npm ci --prefix services/netease --omit=dev --ignore-scripts`。服务只监听本机端口 3737 和 3738；完整包已包含服务和 Node.js。
 
 `PHSRADIO_KUGOU_ONLY=OFF` 生成酷狗、网易云双平台预览版；`ON` 保留仅酷狗构建用于兼容验证。未开放平台的开发代码保留在仓库，测试不会使用真实账号。更多实现细节见 [开发说明](docs/development.md)。
 
-当前开发构建与打包默认为 `0.4.0` 正式版，`PHSRADIO_PRERELEASE` 为空，`PHSRADIO_KUGOU_ONLY=OFF`。搬迁过的项目应使用新构建目录。Beta 版的更新检查也查询正式 Release。
+当前开发构建与打包默认为 `0.4.1` 正式版，`PHSRADIO_PRERELEASE` 为空，`PHSRADIO_KUGOU_ONLY=OFF`。搬迁过的项目应使用新构建目录。Beta 版的更新检查也查询正式 Release。
 
 ## 许可与依赖源码
 
