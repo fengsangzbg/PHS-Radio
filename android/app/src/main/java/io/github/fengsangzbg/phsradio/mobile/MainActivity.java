@@ -47,6 +47,7 @@ public final class MainActivity extends Activity {
     private FrameLayout searchOverlay;
     private EditText searchField;
     private LinearLayout searchCard;
+    private LinearLayout suggestionBox;
     private final java.util.List<View> topParts=new ArrayList<>();
     private EditText headerSearch;
     private float downX,downY;
@@ -101,8 +102,8 @@ public final class MainActivity extends Activity {
         ListView list=new ListView(this);list.setBackgroundColor(Color.TRANSPARENT);list.setDivider(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));list.setDividerHeight(dp(9));
         adapter=new BaseAdapter(){public int getCount(){return visible.size();}public Object getItem(int n){return titles.get(visible.get(n));}public long getItemId(int n){return visible.get(n);}public View getView(int n,View recycled,ViewGroup parent){GlassRow row;TextView label;if(recycled instanceof GlassRow){row=(GlassRow)recycled;label=(TextView)row.getChildAt(0);}else{row=new GlassRow(MainActivity.this);row.setPadding(dp(16),dp(10),dp(16),dp(10));label=text("",15,false);label.setSingleLine();label.setEllipsize(TextUtils.TruncateAt.END);label.setGravity(Gravity.CENTER_VERTICAL);row.addView(label,new LinearLayout.LayoutParams(-1,-2));}label.setText(titles.get(visible.get(n)));return row;}};
         list.setOnScrollListener(new android.widget.AbsListView.OnScrollListener(){public void onScrollStateChanged(android.widget.AbsListView v,int state){}public void onScroll(android.widget.AbsListView v,int first,int count,int total){GlassRow.kick(.55f);}});list.setAdapter(adapter);list.setOnItemClickListener((parent,view,position,id)->start(visible.get(position)));localScreen.addView(list,new LinearLayout.LayoutParams(-1,0,1));
-        search.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence value,int start,int before,int count){if(searchPending!=null)searchHandler.removeCallbacks(searchPending);String query=value.toString();searchPending=()->{songPage.back();showOnline();pages.search(query);};searchHandler.postDelayed(searchPending,550);}public void afterTextChanged(Editable e){}});
-        search.setOnEditorActionListener((v,action,event)->{if(action==android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH){searchHandler.removeCallbacksAndMessages(null);songPage.back();showOnline();pages.search(search.getText().toString());((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(),0);return true;}return false;});
+        search.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence value,int start,int before,int count){if(searchPending!=null)searchHandler.removeCallbacks(searchPending);String query=value.toString();updateSuggestions(query);}public void afterTextChanged(Editable e){}});
+        search.setOnEditorActionListener((v,action,event)->{if(action==android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH){submitSearch(search.getText().toString());((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(),0);return true;}return false;});
         renderRoute();
         createDock();songPage.home(content);restoreQueue();handleShare(getIntent());
         // The aquarium scene sits on top of the finished UI, exactly like the
@@ -202,12 +203,43 @@ public final class MainActivity extends Activity {
         card.addView(text("搜索",18,true));
         searchField=headerSearch;
         card.addView(searchField,new LinearLayout.LayoutParams(-1,dp(52)));
+        suggestionBox=new LinearLayout(this);suggestionBox.setOrientation(LinearLayout.VERTICAL);
+        card.addView(suggestionBox,new LinearLayout.LayoutParams(-1,-2));
         FrameLayout.LayoutParams size=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP);
         size.leftMargin=dp(18);size.rightMargin=dp(18);size.topMargin=dp(168);
         searchOverlay.addView(card,size);
         root.addView(searchOverlay,new FrameLayout.LayoutParams(-1,-1));
     }
 
+    /** Live suggestions while typing: the local library first, like the PC search. */
+    private void updateSuggestions(String query){
+        if(suggestionBox==null)return;
+        suggestionBox.removeAllViews();
+        String key=query==null?"":query.trim().toLowerCase(Locale.ROOT);
+        if(key.isEmpty())return;
+        int shown=0;
+        for(String title:titles){
+            if(shown>=5)break;
+            if(title==null||!title.toLowerCase(Locale.ROOT).contains(key))continue;
+            final String pick=title;
+            TextView row=text(pick,15,false);
+            row.setPadding(dp(12),dp(9),dp(12),dp(9));
+            row.setBackground(glass(16));
+            row.setOnClickListener(v->{searchField.setText(pick);submitSearch(pick);});
+            LinearLayout.LayoutParams layout=new LinearLayout.LayoutParams(-1,-2);
+            layout.topMargin=dp(6);
+            suggestionBox.addView(row,layout);
+            ++shown;
+        }
+    }
+
+    private void submitSearch(String query){
+        String clean=query==null?"":query.trim();
+        if(clean.isEmpty())return;
+        searchHandler.removeCallbacksAndMessages(null);
+        closeSearch();
+        songPage.back();showOnline();pages.search(clean);flip();
+    }
     private void openSearch(){
         searchOverlay.setVisibility(View.VISIBLE);
         searchOverlay.animate().alpha(1f).setDuration(180).start();
@@ -255,18 +287,21 @@ public final class MainActivity extends Activity {
     private void send(String action){if("toggle".equals(action)&&play.getText().equals("▶")&&now.getText().equals("选择一首音乐")&&!uris.isEmpty())start(0);else command(new Intent(this,PlaybackService.class).setAction(action),false);}
     private void command(Intent intent,boolean foreground){if(foreground)startForegroundService(intent);else startService(intent);}
     private Dialog glassDialog(){
-        Dialog dialog=new Dialog(this,android.R.style.Theme_Translucent_NoTitleBar);
-        Window window=dialog.getWindow();
-        if(window!=null){
+        Dialog dialog=new Dialog(this);
+        try{
+            dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+            Window window=dialog.getWindow();
             window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
             window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             WindowManager.LayoutParams params=window.getAttributes();
             params.dimAmount=.42f;
             window.setAttributes(params);
             if(Build.VERSION.SDK_INT>=31)window.setBackgroundBlurRadius(dp(26));
+        }catch(Throwable ignored){
         }
         return dialog;
-    }    private void showSettings(){
+    }
+    private void showSettings(){
         final Dialog dialog=glassDialog();
         LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(22),dp(22),dp(22),dp(18));panel.setBackground(glass(34));
         panel.addView(text("设置",22,true));
