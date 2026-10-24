@@ -40,6 +40,12 @@ final class GlassRow extends LinearLayout {
         clock = SystemClock.uptimeMillis();
     }
 
+    /** Recommendation tiles stack vertically; rows stay horizontal. */
+    void vertical() {
+        setOrientation(VERTICAL);
+        setGravity(android.view.Gravity.TOP);
+    }
+
     @Override protected void dispatchDraw(Canvas canvas) {
         long now = SystemClock.uptimeMillis();
         float dt = Math.min(.05f, (now - clock) / 1000f);
