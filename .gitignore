@@ -20,3 +20,5 @@ tools/meteor-preview/*.png
 tools/meteor-preview/*.gif
 tools/meteor-preview/*.exe
 tools/meteor-preview/frames-*/
+
+tools/_logo_out/
