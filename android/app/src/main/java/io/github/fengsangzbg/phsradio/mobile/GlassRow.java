@@ -86,12 +86,13 @@ final class GlassRow extends LinearLayout {
         canvas.drawRoundRect(rim, radius, radius, stroke);
 
         // Squash on press plus the scroll jelly: both are canvas transforms, so a
-        // recycled row deforms without relayout.
-        float jellyAge = (SystemClock.uptimeMillis() - pulseAt) / 260f;
-        float jelly = pulse * Math.max(0f, 1f - jellyAge);
+        // recycled row deforms without relayout. The jelly is a damped spring, so
+        // it overshoots once before settling instead of easing out linearly.
+        float jellyAge = (SystemClock.uptimeMillis() - pulseAt) / 430f;
+        float jelly = (float) (pulse * Math.exp(-jellyAge * 2.4f) * Math.cos(jellyAge * 15.0f));
         canvas.save();
-        float squash = 1f - press * .035f - jelly * .045f;
-        canvas.scale(1f + press * .012f + jelly * .020f, squash, w / 2f, h / 2f);
+        float squash = 1f - press * .035f - jelly * .085f;
+        canvas.scale(1f + press * .012f + jelly * .045f, squash, w / 2f, h / 2f);
         super.dispatchDraw(canvas);
         canvas.restore();
         if (jelly > .01f) postInvalidateOnAnimation();

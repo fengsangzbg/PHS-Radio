@@ -46,6 +46,12 @@ public final class MainActivity extends Activity {
     private final java.util.List<View> pageParts=new ArrayList<>();
     private FrameLayout searchOverlay;
     private EditText searchField;
+    private LinearLayout searchCard;
+    private final java.util.List<View> topParts=new ArrayList<>();
+    private EditText headerSearch;
+    private float downX,downY;
+    private int drag;
+    private float flipFrom;
     private float pullStart;
     private boolean pulling;
     private boolean sideRailVisible;
@@ -83,10 +89,10 @@ public final class MainActivity extends Activity {
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.logo_phs);header.addView(logo,new LinearLayout.LayoutParams(dp(40),dp(40)));logo.setOnClickListener(v->v.animate().rotationBy(360).scaleX(.85f).scaleY(.85f).setDuration(250).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator(3)).setDuration(400).start()).start());
         TextView brand=text("PHS Radio",19,true);brand.setOnClickListener(v->{v.animate().rotationBy(360).scaleX(1.08f).scaleY(.94f).setDuration(330).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator()).setDuration(300).start()).start();});header.addView(brand,new LinearLayout.LayoutParams(0,dp(54),1));
         Button account=button("账号",()->accounts.show());header.addView(account,new LinearLayout.LayoutParams(dp(68),dp(46)));
-        Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);pageParts.add(header);
+        Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);pageParts.add(header);topParts.add(header);
         LinearLayout actions=row();actions.setPadding(0,dp(10),0,dp(8));
-        EditText search=new EditText(this);search.setSingleLine();search.setTextColor(Color.WHITE);search.setHintTextColor(0xFFA8CACF);search.setHint("搜索本地、酷狗、网易云歌曲或歌手");search.setTextSize(14);search.setPadding(dp(16),0,dp(12),0);search.setBackground(glass(24));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);actions.addView(search,new LinearLayout.LayoutParams(0,dp(46),1));content.addView(actions);pageParts.add(actions);
-        LinearLayout nav=row();content.addView(nav);pageParts.add(nav);
+        EditText search=new EditText(this);search.setSingleLine();search.setTextColor(Color.WHITE);search.setHintTextColor(0xFFA8CACF);search.setHint("搜索本地、酷狗、网易云歌曲或歌手");search.setTextSize(14);search.setPadding(dp(16),0,dp(12),0);search.setBackground(glass(24));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);headerSearch=search;
+        LinearLayout nav=row();content.addView(nav);pageParts.add(nav);topParts.add(nav);
         LinearLayout bodyRow=row();content.addView(bodyRow,new LinearLayout.LayoutParams(-1,0,1));pageParts.add(bodyRow);FrameLayout body=new FrameLayout(this);bodyRow.addView(body,new LinearLayout.LayoutParams(0,-1,1));sideVolume=new VerticalVolume(this,value->command(new Intent(this,PlaybackService.class).setAction("volume").putExtra("volume",value),false));sideVolume.level(getSharedPreferences("mobile",0).getFloat("volume",1));LinearLayout.LayoutParams rail=new LinearLayout.LayoutParams(dp(32),dp(168));rail.gravity=Gravity.CENTER_VERTICAL;rail.leftMargin=dp(6);bodyRow.addView(sideVolume,rail);sideVolume.setVisibility(View.GONE);onlineHost=new FrameLayout(this);body.addView(onlineHost,new FrameLayout.LayoutParams(-1,-1));
         localScreen=new LinearLayout(this);localScreen.setOrientation(1);localScreen.setVisibility(View.GONE);body.addView(localScreen,new FrameLayout.LayoutParams(-1,-1));
         pages=new OnlinePages(this,onlineHost,()->queue());pages.onCentre=this::selectCentre;pages.onConnect=()->accounts.show();pages.onRouteSwipe=dx->{if(!route.swipe(dx))return false;lyricRequested=false;renderRoute();onlineHost.setTranslationX(dx<0?dp(38):-dp(38));onlineHost.setAlpha(.6f);onlineHost.animate().translationX(0).alpha(1).setDuration(240).start();return true;};
@@ -107,22 +113,72 @@ public final class MainActivity extends Activity {
         root.addView(entrance,new FrameLayout.LayoutParams(-1,-1));
     }
     @Override public boolean dispatchTouchEvent(MotionEvent e){
-        if(searchOverlay!=null){
-            if(e.getActionMasked()==MotionEvent.ACTION_DOWN){
-                pullStart=e.getY();pulling=e.getY()<dp(120)&&searchOverlay.getVisibility()!=View.VISIBLE;
-            }else if(pulling&&e.getActionMasked()==MotionEvent.ACTION_MOVE){
-                float dy=e.getY()-pullStart;
-                if(dy>dp(10)){float f=Math.min(1f,dy/dp(180));searchOverlay.setVisibility(View.VISIBLE);searchOverlay.setAlpha(f);content.setTranslationY(dy*.35f);return true;}
-            }else if(pulling&&(e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_CANCEL)){
-                float dy=e.getY()-pullStart;pulling=false;
-                content.animate().translationY(0).setDuration(200).start();
-                if(dy>dp(90))openSearch();else closeSearch();
-                return true;
+        if(searchOverlay==null)return super.dispatchTouchEvent(e);
+        switch(e.getActionMasked()){
+            case MotionEvent.ACTION_DOWN:
+                downX=e.getX();downY=e.getY();drag=0;
+                return super.dispatchTouchEvent(e);
+            case MotionEvent.ACTION_MOVE:{
+                float dx=e.getX()-downX,dy=e.getY()-downY;
+                if(drag==0){
+                    if(Math.abs(dx)>dp(10)&&Math.abs(dx)>Math.abs(dy)*1.2f)drag=1;
+                    else if(dy>dp(10)&&downY<dp(150)&&Math.abs(dy)>Math.abs(dx)*1.2f)drag=2;
+                }
+                if(drag==1&&pages!=null){
+                    for(View part:pageParts)part.setTranslationX(dx*.42f);
+                    return true;
+                }
+                if(drag==2){
+                    float f=Math.min(1f,dy/dp(210));
+                    searchOverlay.setVisibility(View.VISIBLE);searchOverlay.setAlpha(f);
+                    // The top block rides down with the sheet and stays legible: the
+                    // logo, account and settings buttons are part of the search view.
+                    for(View part:topParts){part.setTranslationY(dp(26)*f);part.setAlpha(1f);}
+                    if(searchCard!=null)searchCard.setTranslationY(-dp(34)*(1f-f));
+                    return true;
+                }
+                return super.dispatchTouchEvent(e);
             }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:{
+                float dx=e.getX()-downX,dy=e.getY()-downY;
+                if(drag==1){
+                    if(dx<-dp(90))commitFlip(1);
+                    else if(dx>dp(90))commitFlip(-1);
+                    else for(View part:pageParts)part.animate().translationX(0).alpha(1f).setDuration(180).start();
+                    drag=0;return true;
+                }
+                if(drag==2){
+                    for(View part:topParts)part.animate().translationY(0).alpha(1f).setDuration(220).start();
+                    if(dy>dp(90))openSearch();else closeSearch();
+                    drag=0;return true;
+                }
+                drag=0;
+                return super.dispatchTouchEvent(e);
+            }
+            default:
+                return super.dispatchTouchEvent(e);
         }
-        if(e.getActionMasked()==MotionEvent.ACTION_DOWN){swipeX=e.getX();swipeY=e.getY();swipeConsumed=false;swipeBlocked=isLocal||content==null||content.getVisibility()!=View.VISIBLE||inHorizontalScroll(getWindow().getDecorView(),e.getRawX(),e.getRawY());}
-        if(e.getActionMasked()==MotionEvent.ACTION_MOVE&&!swipeBlocked&&!swipeConsumed&&pages!=null){float dx=e.getX()-swipeX,dy=e.getY()-swipeY;if(Math.abs(dx)>dp(84)&&Math.abs(dy)<Math.abs(dx)*.45f){if(pages.swipe(dx)){MotionEvent cancel=MotionEvent.obtain(e);cancel.setAction(MotionEvent.ACTION_CANCEL);super.dispatchTouchEvent(cancel);cancel.recycle();swipeConsumed=true;return true;}}}
-        if(swipeConsumed){if(e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_CANCEL)swipeConsumed=false;return true;}return super.dispatchTouchEvent(e);
+    }
+
+    /** Carries the current page out, then brings the next one in from the far side. */
+    private void commitFlip(final int direction){
+        final int width=getResources().getDisplayMetrics().widthPixels;
+        final boolean[] started={false};
+        for(View part:pageParts){
+            part.animate().translationX(-direction*width*.45f).alpha(.15f).setDuration(150)
+                .withEndAction(()->{
+                    if(started[0])return;
+                    started[0]=true;
+                    if(pages==null)return;
+                    if(pages.swipe(direction>0?-200:200)){
+                        flipFrom=-direction*width*.45f;
+                        renderRoute();
+                    }else{
+                        for(View p:pageParts)p.animate().translationX(0).alpha(1f).setDuration(180).start();
+                    }
+                }).start();
+        }
     }
     private boolean inHorizontalScroll(View view,float x,float y){if(view.getVisibility()!=View.VISIBLE)return false;int[] at=new int[2];view.getLocationOnScreen(at);if(x<at[0]||x>at[0]+view.getWidth()||y<at[1]||y>at[1]+view.getHeight())return false;if(view instanceof HorizontalScrollView||view instanceof SeekBar||view instanceof EditText||view instanceof VerticalVolume)return true;if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=group.getChildCount()-1;i>=0;i--)if(inHorizontalScroll(group.getChildAt(i),x,y))return true;}return false;}
     private void selectCentre(){lyricRequested=false;route.select(HomeRoute.CENTRE);renderRoute();}
@@ -131,7 +187,7 @@ public final class MainActivity extends Activity {
     private void flip(){
         if(pageParts.isEmpty())return;
         for(View part:pageParts){
-            part.setTranslationX(dp(28));part.setAlpha(.35f);
+            part.setTranslationX(flipFrom!=0?flipFrom:dp(28));part.setAlpha(.35f);
             part.animate().translationX(0).alpha(1f).setDuration(260)
                 .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
         }
@@ -139,25 +195,15 @@ public final class MainActivity extends Activity {
 
     private void buildSearchOverlay(){
         searchOverlay=new FrameLayout(this);searchOverlay.setVisibility(View.GONE);searchOverlay.setAlpha(0f);
-        searchOverlay.setBackgroundColor(0x99000812);
+        searchOverlay.setBackgroundColor(0x77000812);
         searchOverlay.setOnClickListener(v->closeSearch());
-        LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout card=new LinearLayout(this);searchCard=card;card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(18),dp(16),dp(18),dp(16));card.setBackground(glass(30));
         card.addView(text("搜索",18,true));
-        searchField=new EditText(this);searchField.setSingleLine();searchField.setTextColor(Color.WHITE);
-        searchField.setHintTextColor(0xFF9CC4CE);searchField.setHint("搜歌曲、歌手或歌单");searchField.setTextSize(16);
-        searchField.setPadding(dp(14),0,dp(14),0);searchField.setBackground(glass(24));
-        card.addView(searchField,new LinearLayout.LayoutParams(-1,dp(48)));
-        searchField.setOnEditorActionListener((v,action,event)->{
-            if(action==android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH){
-                String q=searchField.getText().toString();
-                closeSearch();showOnline();pages.search(q);
-                return true;
-            }
-            return false;
-        });
-        FrameLayout.LayoutParams size=new FrameLayout.LayoutParams(-1,-2,Gravity.CENTER);
-        size.leftMargin=dp(18);size.rightMargin=dp(18);
+        searchField=headerSearch;
+        card.addView(searchField,new LinearLayout.LayoutParams(-1,dp(52)));
+        FrameLayout.LayoutParams size=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP);
+        size.leftMargin=dp(18);size.rightMargin=dp(18);size.topMargin=dp(168);
         searchOverlay.addView(card,size);
         root.addView(searchOverlay,new FrameLayout.LayoutParams(-1,-1));
     }
