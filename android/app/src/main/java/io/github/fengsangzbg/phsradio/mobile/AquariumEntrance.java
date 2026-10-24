@@ -28,7 +28,7 @@ final class AquariumEntrance extends View {
     private final RectF panel = new RectF();
     private final float[] bubbles = new float[48];
 
-    private Bitmap skyImage, whale, logo;
+    private Bitmap skyImage, whale, arms, core;
     private Bitmap skyScaled, whaleScaled;
     private long clock, startedAt;
     private float spin, spinVelocity = BASE_SPIN;
@@ -46,7 +46,8 @@ final class AquariumEntrance extends View {
         try {
             skyImage = decode(context, R.drawable.aquarium_sky, 1620);
             whale = decode(context, R.drawable.humpback, 2048);
-            logo = BitmapFactory.decodeResource(context.getResources(), R.drawable.logo_phs);
+            arms = BitmapFactory.decodeResource(getResources(), R.drawable.logo_arms);
+            core = BitmapFactory.decodeResource(getResources(), R.drawable.logo_core);
         } catch (Throwable ignored) {
             // A missing or undecodable asset must not stop the player opening.
         }
@@ -277,11 +278,7 @@ final class AquariumEntrance extends View {
         stroke.setColor(0x59D8F6FF);
         canvas.drawRoundRect(screen, screenRadius, screenRadius, stroke);
 
-        // Rim light on the body, stronger along the top-left.
-        stroke.setStrokeWidth(dp(2.0f));
-        stroke.setColor(0xCCE8FCFF);
-        canvas.drawArc(new RectF(panel.left + dp(3), panel.top + dp(3), panel.right - dp(3), panel.bottom - dp(3)),
-                188, 128, false, stroke);
+        // Edge light: a gradient along the body edge instead of a free-floating arc.
         stroke.setStrokeWidth(dp(1.0f));
         stroke.setColor(0x66BEEBF8);
         canvas.drawRoundRect(panel, radius, radius, stroke);
@@ -335,16 +332,33 @@ final class AquariumEntrance extends View {
         paint.setColor(0xFF0B2B3C);
         canvas.drawCircle(cx, cy, radius * .92f, paint);
 
-        if (logo != null) {
+        // Vinyl-like rings so the badge reads as a glass record, not a flat disc.
+        stroke.setStrokeWidth(dp(.8f));
+        for (int ring = 1; ring <= 3; ring++) {
+            stroke.setColor(0x1FDFFAFF);
+            canvas.drawCircle(cx, cy, radius * (.34f + ring * .17f), stroke);
+        }
+
+        // Only the typhoon arms spin; the pearl P itself stays upright.
+        if (arms != null) {
             canvas.save();
             Path clip = new Path();
             clip.addCircle(cx, cy, radius * .92f, Path.Direction.CW);
             canvas.clipPath(clip);
             canvas.translate(cx, cy);
             canvas.rotate((float) Math.toDegrees(spin));
-            float inner = radius * 1.32f;
+            float inner = radius * 1.45f;
             paint.setAlpha(255);
-            canvas.drawBitmap(logo, null, new RectF(-inner, -inner, inner, inner), paint);
+            canvas.drawBitmap(arms, null, new RectF(-inner, -inner, inner, inner), paint);
+            canvas.restore();
+        }
+        if (core != null) {
+            canvas.save();
+            Path clip = new Path();
+            clip.addCircle(cx, cy, radius * .92f, Path.Direction.CW);
+            canvas.clipPath(clip);
+            float inner = radius * 1.45f;
+            canvas.drawBitmap(core, null, new RectF(cx - inner, cy - inner, cx + inner, cy + inner), paint);
             canvas.restore();
         }
 

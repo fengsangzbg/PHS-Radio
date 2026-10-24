@@ -1,0 +1,6 @@
+PHS Radio Android 0.1.9-preview
+
+- P 本身不再旋转：logo 拆成两层输出（logo_arms / logo_core），只有台风旋臂转，
+  中央的 P 始终正立，与电脑版 shader 的 armUV = turn(spin)*logo 一致。
+- 去掉机体上那道凭空的圆弧高光，改成贴着边缘的渐变描边。
+- 珍珠徽章内加三圈同心的唱片纹，配合玻璃渐变与高光，质感更接近电脑版的玻璃唱片。

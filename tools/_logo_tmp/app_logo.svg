@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated from tools/generate-app-icon.cpp. PHS Radio original artwork. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">PHS Radio</title>
+  <desc id="desc">A pearl P inside two cyan glass typhoon arms on a transparent background.</desc>
+  <defs>
+    <linearGradient id="arm-glass" gradientUnits="userSpaceOnUse" x1="68" y1="64" x2="400" y2="450">
+      <stop offset="0" stop-color="#a8f9fc" stop-opacity="0.933"/>
+      <stop offset="0.26" stop-color="#4bd9ec" stop-opacity="0.941"/>
+      <stop offset="0.62" stop-color="#1e97c3" stop-opacity="0.898"/>
+      <stop offset="1" stop-color="#145172" stop-opacity="0.929"/>
+    </linearGradient>
+    <linearGradient id="rim" gradientUnits="userSpaceOnUse" x1="70" y1="55" x2="415" y2="405">
+      <stop offset="0" stop-color="#f5ffff" stop-opacity="0.765"/>
+      <stop offset="0.5" stop-color="#94eaff" stop-opacity="0.275"/>
+      <stop offset="1" stop-color="#8ae0f5" stop-opacity="0.471"/>
+    </linearGradient>
+    <linearGradient id="gleam" gradientUnits="userSpaceOnUse" x1="74" y1="215" x2="413" y2="133">
+      <stop offset="0" stop-color="#f5ffff" stop-opacity="0.137"/>
+      <stop offset="0.28" stop-color="#f6ffff" stop-opacity="0.678"/>
+      <stop offset="1" stop-color="#f6ffff" stop-opacity="0.000"/>
+    </linearGradient>
+    <linearGradient id="eye-glass" gradientUnits="userSpaceOnUse" x1="210" y1="132" x2="282" y2="390">
+      <stop offset="0" stop-color="#254f5f" stop-opacity="0.824"/>
+      <stop offset="0.44" stop-color="#0c2633" stop-opacity="0.902"/>
+      <stop offset="1" stop-color="#050f1b" stop-opacity="0.941"/>
+    </linearGradient>
+    <linearGradient id="eye-rim" gradientUnits="userSpaceOnUse" x1="205" y1="130" x2="292" y2="388">
+      <stop offset="0" stop-color="#d9fbff" stop-opacity="0.659"/>
+      <stop offset="0.46" stop-color="#abf4ff" stop-opacity="0.137"/>
+      <stop offset="1" stop-color="#46a6c7" stop-opacity="0.369"/>
+    </linearGradient>
+    <linearGradient id="pearl" gradientUnits="userSpaceOnUse" x1="209" y1="160" x2="303" y2="363">
+      <stop offset="0" stop-color="#feffff" stop-opacity="1.000"/>
+      <stop offset="0.47" stop-color="#e8fbff" stop-opacity="1.000"/>
+      <stop offset="1" stop-color="#b0e0f1" stop-opacity="1.000"/>
+    </linearGradient>
+    <g id="spiral-arm" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 94 438 C 39 384 28 308 43 234 C 64 126 160 60 267 63 C 339 65 403 101 443 159 C 371 121 294 117 238 145 C 175 177 145 238 158 299 C 171 354 213 390 271 392 C 213 438 143 462 94 438 Z" fill="url(#arm-glass)" stroke="url(#rim)" stroke-width="3.3"/>
+      <path d="M 69 243 C 91 140 177 86 268 88 C 325 89 373 110 409 137" fill="none" stroke="url(#gleam)" stroke-width="4.5"/>
+      <path d="M 109 420 C 161 435 213 418 252 399" fill="none" stroke="#c6f9ff" stroke-opacity="0.314" stroke-width="2.3"/>
+    </g>
+  </defs>
+  <use href="#spiral-arm"/>
+  <use href="#spiral-arm" transform="rotate(180 256 256)"/>
+  <circle cx="256" cy="256" r="123" fill="none" stroke="#000812" stroke-opacity="0.196" stroke-width="9"/>
+  <circle cx="256" cy="256" r="122" fill="url(#eye-glass)" stroke="url(#eye-rim)" stroke-width="3.4"/>
+  <path d="M 189 158 L 263 158 C 313 158 343 186 343 230 C 343 274 312 300 264 300 L 238 300 L 238 360 L 189 360 Z M 238 204 L 238 255 L 259 255 C 281 255 294 246 294 230 C 294 214 281 204 259 204 Z" transform="translate(0 3)" fill="#00050e" fill-opacity="0.361" fill-rule="evenodd"/>
+  <path d="M 189 158 L 263 158 C 313 158 343 186 343 230 C 343 274 312 300 264 300 L 238 300 L 238 360 L 189 360 Z M 238 204 L 238 255 L 259 255 C 281 255 294 246 294 230 C 294 214 281 204 259 204 Z" fill="url(#pearl)" fill-rule="evenodd" stroke="#f2ffff" stroke-opacity="0.510" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="M 195 179 L 195 165 L 260 165 C 286 165 306 173 319 188" fill="none" stroke="white" stroke-opacity="0.643" stroke-width="2.3" stroke-linecap="round"/>
+</svg>

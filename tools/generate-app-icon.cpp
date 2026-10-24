@@ -124,11 +124,12 @@ QPainterPath path(const QString &source)
     return result;
 }
 
-void paintLogo(QPainter &painter)
+void paintLogo(QPainter &painter, bool withArms = true, bool withCore = true)
 {
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     const QPainterPath spiral = path(arm);
+    if (withArms) {
     for (int side = 0; side < 2; ++side) {
         painter.save();
         if (side) {
@@ -146,6 +147,8 @@ void paintLogo(QPainter &painter)
         painter.drawPath(path(armRefraction));
         painter.restore();
     }
+    }
+    if (withCore) {
     // A dark transparent eye keeps the pearl P legible on light or dark desktops.
     painter.setPen(QPen(QColor(0, 8, 18, 50), 9));
     painter.setBrush(Qt::NoBrush);
@@ -166,9 +169,10 @@ void paintLogo(QPainter &painter)
     painter.setPen(QPen(QColor(255, 255, 255, 164), 2.3, Qt::SolidLine, Qt::RoundCap));
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(path(letterGleam));
+    }
 }
 
-QImage frame(int size)
+QImage frame(int size, bool withArms = true, bool withCore = true)
 {
     constexpr int supersampling = 4;
     QImage image(size * supersampling, size * supersampling, QImage::Format_ARGB32_Premultiplied);
@@ -176,7 +180,7 @@ QImage frame(int size)
     {
         QPainter painter(&image);
         painter.scale(image.width() / 512.0, image.height() / 512.0);
-        paintLogo(painter);
+        paintLogo(painter, withArms, withCore);
     }
     return image.scaled(size, size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 }
@@ -315,7 +319,15 @@ int main(int argc, char **argv)
 
     // Optional PNG export keeps the Android copy of the logo pixel-identical to
     // the artwork Windows renders from the same vector paths.
-    if (arguments.size() > 4 && arguments.at(2) == QStringLiteral("--png")) {
+    if (arguments.size() > 3 && arguments.at(2) == QStringLiteral("--layers")) {
+        const QString layerDir = arguments.at(3);
+        require(QDir().mkpath(layerDir), "Cannot create layer output directory.");
+        require(frame(1024, true, false).save(layerDir + QStringLiteral("/logo_arms.png"), "PNG"),
+                "Cannot save the arm layer.");
+        require(frame(1024, false, true).save(layerDir + QStringLiteral("/logo_core.png"), "PNG"),
+                "Cannot save the core layer.");
+        std::printf("layers written to %s\n", qPrintable(layerDir));
+    } else if (arguments.size() > 4 && arguments.at(2) == QStringLiteral("--png")) {
         const int size = arguments.at(3).toInt();
         require(size >= 48 && size <= 4096, "Requested PNG logo size is out of range.");
         require(frame(size).save(arguments.at(4), "PNG"), "Cannot save PNG logo.");
