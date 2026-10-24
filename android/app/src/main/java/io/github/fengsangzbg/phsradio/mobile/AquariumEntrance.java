@@ -6,14 +6,16 @@ import android.os.SystemClock;
 import android.view.*;
 
 /**
- * Port of the Windows aquarium entrance. The sky photo is opaque from the first
- * frame (the player behind must never show through), the humpback crosses with a
- * slow bob, caustics and bubbles drift, and the pearl P sits on a glass card
- * with the shader's three spiral wind filaments wrapped around it.
+ * Port of the Windows aquarium entrance.
  *
- * The wind follows the original fragment shader: three strands at
- * a = (2*PI*k - time*3.8 + radius*24) / 3 inside a Gaussian annulus, with the
- * spin velocity accelerating while the card is pressed.
+ * The sky is opaque from the first frame, the humpback crosses head-first in the
+ * same direction as the desktop scene, and the card is drawn as the desktop's
+ * glass MP3 shell: an outer glass body with a rim light, a dim refracted screen
+ * inside it, and a circular pearl badge carrying the P.
+ *
+ * The wind follows the original fragment shader (three strands at
+ * a = (2*PI*k - time*3.8 + radius*24) / 3 inside a Gaussian annulus) but each
+ * strand is drawn in tapered bands instead of one flat arc.
  */
 final class AquariumEntrance extends View {
     private static final float BASE_SPIN = .55f;
@@ -64,13 +66,13 @@ final class AquariumEntrance extends View {
     @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
         super.onSizeChanged(w, h, ow, oh);
         skyScaled = cover(skyImage, w, h);
-        int whaleWidth = Math.round(w * .78f);
+        int whaleWidth = Math.round(w * .86f);
         if (whale != null && whaleWidth > 0) {
             int whaleHeight = Math.max(1, Math.round(whale.getHeight() * whaleWidth / (float) whale.getWidth()));
             whaleScaled = Bitmap.createScaledBitmap(whale, whaleWidth, whaleHeight, true);
         }
-        float panelWidth = Math.min(w * .82f, dp(360));
-        float panelHeight = Math.min(h * .58f, dp(430));
+        float panelWidth = Math.min(w * .62f, dp(300));
+        float panelHeight = Math.min(h * .62f, dp(460));
         panel.set((w - panelWidth) / 2f, (h - panelHeight) / 2f, (w + panelWidth) / 2f, (h + panelHeight) / 2f);
     }
 
@@ -103,14 +105,12 @@ final class AquariumEntrance extends View {
         int w = getWidth(), h = getHeight();
         if (w == 0 || h == 0) return;
 
-        // Spin physics: idle drift, accelerate hard while held, decay afterwards.
         float target = pressed ? FAST_SPIN : BASE_SPIN;
         spinVelocity += (target - spinVelocity) * Math.min(1f, dt * 6f);
         spin += spinVelocity * dt;
         float windTarget = pressed ? 1f : Math.max(0f, (spinVelocity - BASE_SPIN) / (FAST_SPIN - BASE_SPIN));
         wind += (windTarget - wind) * Math.min(1f, dt * 7f);
 
-        // Opaque base first: the player UI must never bleed through this scene.
         canvas.drawColor(0xFF0B2536);
 
         float zoom = 1.02f + .012f * (float) Math.sin(seconds * .16f);
@@ -126,7 +126,7 @@ final class AquariumEntrance extends View {
         drawBubbles(canvas, w, h, seconds);
 
         paint.setShader(new RadialGradient(w * .5f, h * .5f, Math.max(w, h) * .72f,
-                new int[]{0x00000000, 0x2E000818, 0x8000070F}, new float[]{.42f, .82f, 1f}, Shader.TileMode.CLAMP));
+                new int[]{0x00000000, 0x26000818, 0x7A00070F}, new float[]{.42f, .82f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawRect(0, 0, w, h, paint);
         paint.setShader(null);
 
@@ -142,7 +142,7 @@ final class AquariumEntrance extends View {
             drawSky(canvas, w, h);
             drawCaustics(canvas, w, h, seconds);
             drawWhale(canvas, w, h, seconds);
-            drawPanel(canvas, w, h, seconds);
+            drawDevice(canvas, w, h, seconds);
             canvas.restore();
             float white = Math.max(0f, (progress - .72f) / .28f);
             if (white > 0f) {
@@ -155,7 +155,7 @@ final class AquariumEntrance extends View {
                 callback.run();
             }
         } else {
-            drawPanel(canvas, w, h, seconds);
+            drawDevice(canvas, w, h, seconds);
         }
         postInvalidateOnAnimation();
     }
@@ -192,14 +192,16 @@ final class AquariumEntrance extends View {
 
     private void drawWhale(Canvas canvas, int w, int h, float seconds) {
         if (whaleScaled == null) return;
-        float cycle = (seconds % 18f) / 18f;
-        float x = -whaleScaled.getWidth() * .55f + w * 1.15f * cycle;
-        float bob = (float) Math.sin(seconds * .55f) * dp(6);
-        float y = h * .40f + bob - whaleScaled.getHeight() * .35f;
+        // The sprite is drawn head-left, so it has to cross right-to-left to swim
+        // forwards; the earlier build moved it left-to-right and looked reversed.
+        float cycle = 1f - (seconds % 18f) / 18f;
+        float x = -whaleScaled.getWidth() * .55f + w * 1.25f * cycle;
+        float bob = (float) Math.sin(seconds * .55f) * dp(7);
+        float y = h * .30f + bob;
         canvas.save();
         canvas.translate(x, y);
-        canvas.rotate((float) Math.sin(seconds * .35f) * 1.6f, whaleScaled.getWidth() * .5f, whaleScaled.getHeight() * .5f);
-        paint.setAlpha(235);
+        canvas.rotate((float) Math.sin(seconds * .35f) * 1.8f, whaleScaled.getWidth() * .5f, whaleScaled.getHeight() * .5f);
+        paint.setAlpha(238);
         canvas.drawBitmap(whaleScaled, 0, 0, paint);
         paint.setAlpha(255);
         canvas.restore();
@@ -223,92 +225,192 @@ final class AquariumEntrance extends View {
         }
     }
 
-    private void drawPanel(Canvas canvas, int w, int h, float seconds) {
-        float centerX = panel.centerX();
-        float press = 1f - pressAmount * .035f;
+    /**
+     * The glass device: floor shadow, outer glass body with a lit rim, a dim
+     * refracted screen inset inside it, then the pearl badge and the labels.
+     */
+    private void drawDevice(Canvas canvas, int w, int h, float seconds) {
+        float radius = Math.min(panel.width(), panel.height()) * .22f;
+        float press = 1f - pressAmount * .03f;
         canvas.save();
-        canvas.scale(press, press, centerX, panel.centerY());
+        canvas.scale(press, press, panel.centerX(), panel.centerY());
 
-        float radius = dp(30);
         paint.setStyle(Paint.Style.FILL);
+        paint.setColor(0x4D001018);
+        RectF shadow = new RectF(panel);
+        shadow.offset(0, dp(10));
+        canvas.drawRoundRect(shadow, radius, radius, paint);
+
+        // Outer glass shell: bright at the top edge, deep water at the bottom.
         paint.setShader(new LinearGradient(panel.left, panel.top, panel.right, panel.bottom,
-                new int[]{0xF23A6E7C, 0xF22A3D5C, 0xF21B2740}, new float[]{0f, .55f, 1f}, Shader.TileMode.CLAMP));
-        canvas.drawRoundRect(panel, radius, radius, paint);
-        paint.setShader(new RadialGradient(panel.left + panel.width() * .22f, panel.top + panel.height() * .12f,
-                panel.width() * .9f, new int[]{0x3CB9EFFF, 0x00B9EFFF}, null, Shader.TileMode.CLAMP));
+                new int[]{0xF2A9E6F4, 0xE855A9C4, 0xE6235972, 0xF2163D50},
+                new float[]{0f, .38f, .74f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawRoundRect(panel, radius, radius, paint);
         paint.setShader(null);
-        stroke.setStrokeWidth(dp(1.2f));
-        stroke.setColor(0x66A7E9F0);
+
+        // Inner screen: the sky again, slightly scaled and dimmed, which reads as
+        // thick glass rather than a flat fill.
+        RectF screen = new RectF(panel);
+        screen.inset(dp(11), dp(11));
+        float screenRadius = radius * .86f;
+        canvas.save();
+        Path clip = new Path();
+        clip.addRoundRect(screen, screenRadius, screenRadius, Path.Direction.CW);
+        canvas.clipPath(clip);
+        if (skyScaled != null) {
+            paint.setAlpha(150);
+            Rect source = new Rect(0, 0, skyScaled.getWidth(), skyScaled.getHeight());
+            RectF destination = new RectF(screen);
+            destination.inset(-dp(26), -dp(18));
+            canvas.drawBitmap(skyScaled, source, destination, paint);
+            paint.setAlpha(255);
+        }
+        paint.setColor(0x8C06222F);
+        canvas.drawRect(screen, paint);
+        paint.setShader(new LinearGradient(screen.left, screen.top, screen.left, screen.bottom,
+                new int[]{0x33000000, 0x00000000, 0x40000A10}, new float[]{0f, .45f, 1f}, Shader.TileMode.CLAMP));
+        canvas.drawRect(screen, paint);
+        paint.setShader(null);
+        canvas.restore();
+
+        stroke.setStrokeWidth(dp(1.4f));
+        stroke.setColor(0x59D8F6FF);
+        canvas.drawRoundRect(screen, screenRadius, screenRadius, stroke);
+
+        // Rim light on the body, stronger along the top-left.
+        stroke.setStrokeWidth(dp(2.0f));
+        stroke.setColor(0xCCE8FCFF);
+        canvas.drawArc(new RectF(panel.left + dp(3), panel.top + dp(3), panel.right - dp(3), panel.bottom - dp(3)),
+                188, 128, false, stroke);
+        stroke.setStrokeWidth(dp(1.0f));
+        stroke.setColor(0x66BEEBF8);
         canvas.drawRoundRect(panel, radius, radius, stroke);
 
-        float logoSize = dp(112);
-        float logoCx = centerX;
-        float logoCy = panel.top + dp(44) + logoSize / 2f;
+        paint.setShader(new RadialGradient(panel.left + panel.width() * .26f, panel.top + panel.height() * .10f,
+                panel.width() * .85f, new int[]{0x40E8FCFF, 0x00E8FCFF}, null, Shader.TileMode.CLAMP));
+        canvas.drawRoundRect(panel, radius, radius, paint);
+        paint.setShader(null);
+
+        float logoSize = dp(104);
+        float logoCx = panel.centerX();
+        float logoCy = panel.bottom - dp(108);
         drawWind(canvas, logoCx, logoCy, logoSize);
-        drawLogo(canvas, logoCx, logoCy, logoSize);
+        drawPearl(canvas, logoCx, logoCy, logoSize);
 
         textPaint.setColor(0xFFF2FDFF);
-        textPaint.setTextSize(dp(24));
-        textPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        canvas.drawText("PHS Radio", centerX, logoCy + logoSize / 2f + dp(34), textPaint);
-
         textPaint.setTextSize(dp(13));
-        textPaint.setColor(0xCCBFE9F2);
         textPaint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
-        canvas.drawText("新大地播放器", centerX, logoCy + logoSize / 2f + dp(58), textPaint);
+        textPaint.setLetterSpacing(.32f);
+        canvas.drawText("PHS RADIO", panel.centerX(), panel.top + dp(52), textPaint);
 
-        float hintY = panel.bottom - dp(34);
-        float pulse = .62f + .38f * (float) Math.sin(seconds * 2.6f);
-        textPaint.setTextSize(dp(14));
-        textPaint.setColor(Color.argb((int) (255 * pulse), 214, 247, 255));
-        canvas.drawText("点击进入", centerX, hintY, textPaint);
+        textPaint.setLetterSpacing(0f);
+        textPaint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        textPaint.setTextSize(dp(21));
+        canvas.drawText("点击软件图标", panel.centerX(), panel.top + dp(96), textPaint);
+        canvas.drawText("进入登录界面", panel.centerX(), panel.top + dp(126), textPaint);
 
-        textPaint.setTextSize(dp(10.5f));
+        textPaint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        textPaint.setTextSize(dp(11.5f));
         textPaint.setColor(0x8CCFEFF7);
-        canvas.drawText("账号可在播放器内连接", centerX, hintY + dp(18), textPaint);
-        canvas.restore();
-    }
-
-    private void drawLogo(Canvas canvas, float cx, float cy, float size) {
-        if (logo == null) return;
-        canvas.save();
-        canvas.rotate((float) Math.toDegrees(spin), cx, cy);
-        paint.setAlpha(255);
-        canvas.drawBitmap(logo, null, new RectF(cx - size / 2f, cy - size / 2f, cx + size / 2f, cy + size / 2f), paint);
+        float pulse = .58f + .42f * (float) Math.sin(seconds * 2.6f);
+        textPaint.setColor(Color.argb((int) (255 * pulse * .8f), 199, 240, 250));
+        canvas.drawText("轻触 P，让音乐开始流动", panel.centerX(), logoCy - logoSize * .78f, textPaint);
         canvas.restore();
     }
 
     /**
-     * Three spiral filaments wrapped around the logo, derived from the desktop
-     * shader: strands = pow(cos(angle*3 + time*3.8 - radius*24), 35) inside a
-     * Gaussian annulus, scaled by the wind intensity.
+     * The pearl badge: a circular glass body so the mark reads round instead of
+     * showing the artwork's pointed arm tips, with the P clipped inside it.
+     */
+    private void drawPearl(Canvas canvas, float cx, float cy, float size) {
+        float radius = size * .5f;
+
+        paint.setStyle(Paint.Style.FILL);
+        paint.setShader(new RadialGradient(cx, cy, radius * 1.06f,
+                new int[]{0xC6E9FCFF, 0x8C7FD9EC, 0x33315F78, 0x00000000},
+                new float[]{.62f, .82f, .94f, 1f}, Shader.TileMode.CLAMP));
+        canvas.drawCircle(cx, cy, radius * 1.06f, paint);
+        paint.setShader(null);
+
+        paint.setColor(0xFF0B2B3C);
+        canvas.drawCircle(cx, cy, radius * .92f, paint);
+
+        if (logo != null) {
+            canvas.save();
+            Path clip = new Path();
+            clip.addCircle(cx, cy, radius * .92f, Path.Direction.CW);
+            canvas.clipPath(clip);
+            canvas.translate(cx, cy);
+            canvas.rotate((float) Math.toDegrees(spin));
+            float inner = radius * 1.32f;
+            paint.setAlpha(255);
+            canvas.drawBitmap(logo, null, new RectF(-inner, -inner, inner, inner), paint);
+            canvas.restore();
+        }
+
+        stroke.setStrokeWidth(dp(2.2f));
+        stroke.setColor(0xD9EFFDFF);
+        canvas.drawCircle(cx, cy, radius * .92f, stroke);
+        stroke.setStrokeWidth(dp(1.2f));
+        stroke.setColor(0x59BEEBF8);
+        canvas.drawCircle(cx, cy, radius * 1.02f, stroke);
+
+        paint.setShader(new RadialGradient(cx - radius * .34f, cy - radius * .40f, radius * .66f,
+                new int[]{0x99FFFFFF, 0x00FFFFFF}, null, Shader.TileMode.CLAMP));
+        canvas.drawCircle(cx, cy, radius * .92f, paint);
+        paint.setShader(null);
+        paint.setStyle(Paint.Style.STROKE);
+    }
+
+    /**
+     * Three spiral wind filaments. Drawn in radial bands so each strand tapers at
+     * both ends instead of reading as a flat arc.
      */
     private void drawWind(Canvas canvas, float cx, float cy, float size) {
         if (wind <= .01f) return;
-        float inner = size * .60f;
-        float outer = size * 1.00f;
+        float inner = size * .56f;
+        float outer = size * 1.06f;
         float seconds = SystemClock.uptimeMillis() / 1000f;
-        stroke.setStyle(Paint.Style.STROKE);
+        // Five radial bands per arm: enough to taper smoothly, cheap enough to
+        // keep the whole scene at 60 fps (bands are paths, not per-segment lines).
+        final int bands = 5;
         for (int arm = 0; arm < 3; arm++) {
-            Path path = new Path();
-            for (int step = 0; step <= 48; step++) {
-                float t = step / 48f;
-                float r = inner + (outer - inner) * t;
-                double angle = (2 * Math.PI * arm - seconds * 3.8 + (r / size) * 24.0) / 3.0;
-                float x = cx + (float) Math.cos(angle) * r;
-                float y = cy + (float) Math.sin(angle) * r;
-                if (step == 0) path.moveTo(x, y); else path.lineTo(x, y);
+            for (int band = 0; band < bands; band++) {
+                float from = band / (float) bands;
+                float to = (band + 1) / (float) bands;
+                float mid = (from + to) / 2f;
+                float taper = (float) Math.pow(Math.sin(Math.PI * mid), .65f);
+                Path path = new Path();
+                boolean started = false;
+                for (int step = 0; step <= 14; step++) {
+                    float f = from + (to - from) * step / 14f;
+                    float r = inner + (outer - inner) * f;
+                    double angle = (2 * Math.PI * arm - seconds * 3.8 + (r / size) * 24.0) / 3.0;
+                    float x = cx + (float) Math.cos(angle) * r;
+                    float y = cy + (float) Math.sin(angle) * r;
+                    if (!started) {
+                        path.moveTo(x, y);
+                        started = true;
+                    } else {
+                        path.lineTo(x, y);
+                    }
+                }
+                stroke.setStrokeWidth(dp(3.4f) + dp(4.6f) * taper);
+                stroke.setColor(Color.argb((int) (30 * wind * taper), 120, 226, 250));
+                canvas.drawPath(path, stroke);
+                stroke.setStrokeWidth(dp(.8f) + dp(2.0f) * taper);
+                stroke.setColor(Color.argb((int) (170 * wind * taper), 196, 248, 255));
+                canvas.drawPath(path, stroke);
             }
-            stroke.setStrokeWidth(dp(3.4f));
-            stroke.setColor(Color.argb((int) (46 * wind), 120, 226, 250));
-            canvas.drawPath(path, stroke);
-            stroke.setStrokeWidth(dp(1.6f));
-            stroke.setColor(Color.argb((int) (150 * wind), 189, 246, 255));
-            canvas.drawPath(path, stroke);
         }
+        paint.setStyle(Paint.Style.FILL);
+        paint.setShader(new RadialGradient(cx, cy, outer,
+                new int[]{0x00000000, Color.argb((int) (22 * wind), 150, 236, 255), 0x00000000},
+                new float[]{.42f, .74f, 1f}, Shader.TileMode.CLAMP));
+        canvas.drawCircle(cx, cy, outer, paint);
+        paint.setShader(null);
+        paint.setStyle(Paint.Style.STROKE);
     }
-
     @Override public boolean onTouchEvent(MotionEvent event) {
         if (leaving) return true;
         switch (event.getActionMasked()) {
