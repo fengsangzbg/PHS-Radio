@@ -40,6 +40,8 @@ final class GlassVisual extends View {
         for(int i=0;i<stars.length;i++)stars[i]=random.nextFloat();
     }
 
+    private float dp(float value){return value*getResources().getDisplayMetrics().density;}
+
     void theme(boolean fire){fireTheme=fire;invalidate();}
     void playing(boolean value){playing=value;last=0;invalidate();}
     void cover(Bitmap value){cover=value;invalidate();}
@@ -72,44 +74,58 @@ final class GlassVisual extends View {
         if(last!=0&&playing)rotation+=(Math.min(50,now-last))*.012f;
         last=now;
         float cx=w/2f,cy=h/2f,r=Math.min(w,h)*.44f;
-
+        float cr=r*.46f;
         paint.setStyle(Paint.Style.FILL);
-        paint.setShader(new RadialGradient(cx,cy+r*.05f,r*1.10f,
-                new int[]{0x66000610,0x00000610},null,Shader.TileMode.CLAMP));
-        canvas.drawCircle(cx,cy+r*.05f,r*1.10f,paint);
 
-        // Body: lit from the upper left, sinking into deep water at the rim.
-        paint.setShader(new RadialGradient(cx-r*.26f,cy-r*.30f,r*1.18f,
-                new int[]{0xFF24506F,0xFF153952,0xFF081C2C},
-                new float[]{0f,.52f,1f},Shader.TileMode.CLAMP));
+        // Outer bloom so the disc sits in light instead of on a flat panel.
+        paint.setShader(new RadialGradient(cx,cy,r*1.16f,
+                new int[]{0x004FE9FF,0x2240D6F5,0x0000B8E0},
+                new float[]{.62f,.90f,1f},Shader.TileMode.CLAMP));
+        canvas.drawCircle(cx,cy,r*1.16f,paint);
+
+        // Clear glass body: pale aqua with a bright upper-left shoulder. This is
+        // the Aero read: light passes through, it does not paint a dark vinyl.
+        paint.setShader(new RadialGradient(cx-r*.30f,cy-r*.34f,r*1.25f,
+                new int[]{0xFFDFF9FF,0xFFB7E9F6,0xFF7FC8DE,0xCC3E93AE},
+                new float[]{0f,.30f,.62f,1f},Shader.TileMode.CLAMP));
         canvas.drawCircle(cx,cy,r,paint);
         paint.setShader(null);
 
-        // Grooves.
+        // Grooves: fine, cool, and fading outward so they never fight the art.
         paint.setStyle(Paint.Style.STROKE);
-        for(int i=1;i<=18;i++){
-            float rr=r*(1f-i*.034f);
-            if(rr<=r*.50f)break;
+        for(int i=1;i<=20;i++){
+            float rr=r*(1f-i*.031f);
+            if(rr<=cr+dp(3))break;
             paint.setStrokeWidth(1f);
-            paint.setColor(i%3==0?0x3A5EE8FF:0x1A2E7A99);
+            paint.setColor(i%4==0?0x4AFFFFFF:0x22BAF1FF);
             canvas.drawCircle(cx,cy,rr,paint);
         }
-        // Rim light.
-        paint.setStrokeWidth(2.6f);
-        paint.setColor(0xCCE8FCFF);
-        canvas.drawCircle(cx,cy,r-1.5f,paint);
-        paint.setStrokeWidth(1f);
-        paint.setColor(0x55BEEBF8);
-        canvas.drawCircle(cx,cy,r-5f,paint);
 
-        // Artwork disc: opaque backing first so nothing shows through a PNG cover.
-        float cr=r*.46f;
+        // Iridescent dispersion at the rim: four hue arcs, the Aero rainbow edge.
+        int[] hues={186,205,268,320};
+        for(int i=0;i<hues.length;i++){
+            paint.setStrokeWidth(dp(2.2f));
+            paint.setColor(Color.HSVToColor(new float[]{hues[i],.55f,1f,}));
+            paint.setAlpha(46);
+            float inset=dp(2.2f)+i*dp(1.1f);
+            canvas.drawArc(cx-r+inset,cy-r+inset,cx+r-inset,cy+r-inset,200+i*12,60,false,paint);
+        }
+
+        // Crisp bright rim plus a dark seat line under it for thickness.
+        paint.setStrokeWidth(dp(2.4f));
+        paint.setColor(0xF2F4FEFF);
+        canvas.drawCircle(cx,cy,r-dp(1.2f),paint);
+        paint.setStrokeWidth(dp(1f));
+        paint.setColor(0x4A1A5E78);
+        canvas.drawCircle(cx,cy,r-dp(4f),paint);
+
+        // Artwork: opaque seat, then the picture, then a glass bezel.
         clip.reset();
         clip.addCircle(cx,cy,cr,Path.Direction.CW);
         canvas.save();
         canvas.clipPath(clip);
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(0xFF05121C);
+        paint.setColor(0xFF07202E);
         canvas.drawCircle(cx,cy,cr,paint);
         if(cover!=null){
             float side=Math.min(cover.getWidth(),cover.getHeight());
@@ -125,39 +141,44 @@ final class GlassVisual extends View {
         }
         canvas.restore();
 
-        // Crisp rim around the artwork, then the spindle when there is no art.
         paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(2f);
-        paint.setColor(0xDDDFF7FF);
+        paint.setStrokeWidth(dp(2.2f));
+        paint.setColor(0xEEFFFFFF);
         canvas.drawCircle(cx,cy,cr,paint);
-        paint.setStrokeWidth(1f);
-        paint.setColor(0x66234A63);
-        canvas.drawCircle(cx,cy,cr+2f,paint);
+        paint.setStrokeWidth(dp(1f));
+        paint.setColor(0x66103A4E);
+        canvas.drawCircle(cx,cy,cr+dp(2f),paint);
         if(cover==null){
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFFB9EDF1);
+            paint.setColor(0xFFFFFFFF);
             canvas.drawCircle(cx,cy,r*.045f,paint);
         }
 
-        // Glass sheen across the grooves only: the artwork stays unmistakably clear.
+        // Glass sheen on the annulus only: the art stays untouched and sharp.
         annulus.reset();
         annulus.setFillType(Path.FillType.EVEN_ODD);
-        annulus.addCircle(cx,cy,r-1f,Path.Direction.CW);
-        annulus.addCircle(cx,cy,cr+3f,Path.Direction.CCW);
+        annulus.addCircle(cx,cy,r-dp(2f),Path.Direction.CW);
+        annulus.addCircle(cx,cy,cr+dp(3f),Path.Direction.CCW);
         canvas.save();
         canvas.clipPath(annulus);
         paint.setStyle(Paint.Style.FILL);
-        paint.setShader(new LinearGradient(cx-r,cy-r,cx+r*.30f,cy+r*.55f,
-                new int[]{0x59FFFFFF,0x14FFFFFF,0x00FFFFFF},
-                new float[]{0f,.35f,1f},Shader.TileMode.CLAMP));
+        paint.setShader(new LinearGradient(cx-r*.8f,cy-r, cx+r*.1f,cy+r*.2f,
+                new int[]{0x88FFFFFF,0x2EFFFFFF,0x00FFFFFF},
+                new float[]{0f,.28f,1f},Shader.TileMode.CLAMP));
         canvas.drawCircle(cx,cy,r,paint);
         paint.setShader(null);
         canvas.restore();
 
-        // A short specular arc on the upper rim, like the desktop glass ring.
+        // Two specular streaks: the long upper arc is what sells "crystal".
         paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(3f);
-        paint.setColor(0x88EAFEFF);
-        canvas.drawArc(cx-r+2,cy-r+2,cx+r-2,cy+r-2,196,86,false,paint);
+        paint.setStrokeWidth(dp(5f));
+        paint.setColor(0x40FFFFFF);
+        canvas.drawArc(cx-r*.86f,cy-r*.86f,cx+r*.86f,cy+r*.86f,192,74,false,paint);
+        paint.setStrokeWidth(dp(1.8f));
+        paint.setColor(0xCCFFFFFF);
+        canvas.drawArc(cx-r*.84f,cy-r*.84f,cx+r*.84f,cy+r*.84f,196,58,false,paint);
+        paint.setStrokeWidth(dp(2.4f));
+        paint.setColor(0x66FFFFFF);
+        canvas.drawArc(cx-r*.80f,cy-r*.80f,cx+r*.80f,cy+r*.80f,26,40,false,paint);
     }
 }

@@ -16,6 +16,7 @@ import java.util.*;
 
 /** Only account-authorized platform sources; every track is resolved just before playback. */
 final class OnlineApi implements AutoCloseable {
+    String quality="128";
     final Context context;
     private final MusicAccounts accounts;
     private final LinkedHashMap<String,JSONArray> trackCache=new LinkedHashMap<>(4,.75f,true);
@@ -90,7 +91,7 @@ final class OnlineApi implements AutoCloseable {
         }
         String dfid=context.getSharedPreferences("devices",0).getString("dfid-"+session.getString("userid"),"");if(dfid.isEmpty())dfid=register(session);
         session.put("dfid",dfid);
-        TreeMap<String,String> p=new TreeMap<>(Map.of("hash",track.optString("hash",track.getString("id")).toLowerCase(Locale.ROOT),"album_id",number(track.optString("album_id")),"album_audio_id",number(track.optString("album_audio_id")),"area_code","1","ssa_flag","is_fromtrack","version","11430","page_id","151369488","quality","128","behavior","play"));
+        TreeMap<String,String> p=new TreeMap<>(Map.of("hash",track.optString("hash",track.getString("id")).toLowerCase(Locale.ROOT),"album_id",number(track.optString("album_id")),"album_audio_id",number(track.optString("album_audio_id")),"area_code","1","ssa_flag","is_fromtrack","version","11430","page_id","151369488","quality",quality,"behavior","play"));
         p.putAll(Map.of("pid","2","cmd","26","pidversion","3001","IsFreePart","0","ppage_id","463467626,350369493,788954147","cdnBackup","1","module","","clientver","11430"));
         JSONObject response=kg("/v5/url",p,null,"trackercdn.kugou.com",session);if(response.optInt("error_code")==20010){context.getSharedPreferences("devices",0).edit().remove("dfid-"+session.getString("userid")).apply();throw new IOException("酷狗设备授权已失效，请再点一次播放重新验证");}JSONArray urls=response.optJSONArray("url");if(urls==null&&response.optJSONObject("data")!=null)urls=response.getJSONObject("data").optJSONArray("url");
         if(urls==null){String direct=pick(response,"play_url","url");if(direct.isEmpty()&&response.optJSONObject("data")!=null)direct=pick(response.getJSONObject("data"),"play_url","url");if(!direct.isEmpty()&&!direct.startsWith("["))return playable(direct);}
