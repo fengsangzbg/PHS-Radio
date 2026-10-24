@@ -73,6 +73,15 @@ final class CrystalHeartView extends View {
         }
 
         buildHeart(cx, cy, size);
+        // Translucent glass body first, so the heart reads as crystal and not paint.
+        paint.setStyle(Paint.Style.FILL);
+        paint.setShader(new LinearGradient(cx, cy - size, cx, cy + size,
+                new int[]{0xE6FFFFFF, 0xB3D8F8FF, 0x8C86D4F0},
+                new float[]{0f, .55f, 1f}, Shader.TileMode.CLAMP));
+        paint.setAlpha(lit ? 205 : 160);
+        canvas.drawPath(heart, paint);
+        paint.setShader(null);
+        paint.setAlpha(255);
 
         // Facets: triangles from the centre to the outline, shaded by direction.
         float[] ring = {
@@ -90,7 +99,7 @@ final class CrystalHeartView extends View {
             float sat = lit ? .55f - .28f * lit01 : .10f;
             int color = Color.HSVToColor(new float[]{hue, sat, value});
             paint.setColor(color);
-            paint.setAlpha(lit ? 235 : 190);
+            paint.setAlpha(lit ? 105 : 78);
             facet.reset();
             facet.moveTo(cx, cy - size * .12f);
             facet.lineTo(x, y);
@@ -108,6 +117,16 @@ final class CrystalHeartView extends View {
             canvas.drawLine(cx, cy - size * .12f, cx + ring[i] * size, cy + ring[i + 1] * size, paint);
         }
 
+        // Prismatic edge: a rainbow gradient stroked over the silhouette.
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(dp(2.6f));
+        paint.setShader(new LinearGradient(cx - size, cy - size, cx + size, cy + size,
+                new int[]{0x8CFF6EC7, 0x8C83E8FF, 0x8C89FF9E, 0x8CFFE066},
+                null, Shader.TileMode.CLAMP));
+        paint.setAlpha(lit ? 220 : 150);
+        canvas.drawPath(heart, paint);
+        paint.setShader(null);
+        paint.setAlpha(255);
         // Rim.
         paint.setStrokeWidth(dp(1.6f));
         paint.setColor(0xCCFFFFFF);
