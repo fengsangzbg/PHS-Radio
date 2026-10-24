@@ -42,6 +42,7 @@ public final class MainActivity extends Activity {
     private Button play,mode;
     private SeekBar progress;
     private BaseAdapter adapter;
+    private AquariumEntrance entrance;
     private long duration;
     private boolean seeking,registered;
     private final BroadcastReceiver state=new BroadcastReceiver(){public void onReceive(Context c,Intent i){
@@ -72,7 +73,7 @@ public final class MainActivity extends Activity {
         meteor=new PlayMeteor(this);root.addView(meteor,new FrameLayout.LayoutParams(-1,-1));
         setContentView(root);
         LinearLayout header=row();header.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.ic_phs);header.addView(logo,new LinearLayout.LayoutParams(dp(40),dp(40)));logo.setOnClickListener(v->v.animate().rotationBy(360).scaleX(.85f).scaleY(.85f).setDuration(250).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator(3)).setDuration(400).start()).start());
+        ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.logo_phs);header.addView(logo,new LinearLayout.LayoutParams(dp(40),dp(40)));logo.setOnClickListener(v->v.animate().rotationBy(360).scaleX(.85f).scaleY(.85f).setDuration(250).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator(3)).setDuration(400).start()).start());
         TextView brand=text("PHS Radio",19,true);brand.setOnClickListener(v->{v.animate().rotationBy(360).scaleX(1.08f).scaleY(.94f).setDuration(330).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator()).setDuration(300).start()).start();});header.addView(brand,new LinearLayout.LayoutParams(0,dp(54),1));
         Button account=button("账号",()->accounts.show());header.addView(account,new LinearLayout.LayoutParams(dp(68),dp(46)));
         Button theme=button("主题",()->showThemes());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);
@@ -91,6 +92,11 @@ public final class MainActivity extends Activity {
         search.setOnEditorActionListener((v,action,event)->{if(action==android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH){searchHandler.removeCallbacksAndMessages(null);songPage.back();showOnline();pages.search(search.getText().toString());((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(),0);return true;}return false;});
         renderRoute();
         createDock();songPage.home(content);restoreQueue();handleShare(getIntent());
+        // The aquarium scene sits on top of the finished UI, exactly like the
+        // Windows build: tap to zoom in, then drop the view entirely.
+        entrance=new AquariumEntrance(this);
+        entrance.onEntered=()->{root.removeView(entrance);entrance=null;};
+        root.addView(entrance,new FrameLayout.LayoutParams(-1,-1));
     }
     @Override public boolean dispatchTouchEvent(MotionEvent e){
         if(e.getActionMasked()==MotionEvent.ACTION_DOWN){swipeX=e.getX();swipeY=e.getY();swipeConsumed=false;swipeBlocked=isLocal||content==null||content.getVisibility()!=View.VISIBLE||inHorizontalScroll(getWindow().getDecorView(),e.getRawX(),e.getRawY());}

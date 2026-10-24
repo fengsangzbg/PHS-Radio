@@ -313,8 +313,14 @@ int main(int argc, char **argv)
     writeFile(output.filePath(QStringLiteral("app.ico")), icon);
     verifyIcon(output.filePath(QStringLiteral("app.ico")), sizes);
 
-    // Optional contact sheet is a review artifact, not a runtime asset.
-    if (arguments.size() > 2) {
+    // Optional PNG export keeps the Android copy of the logo pixel-identical to
+    // the artwork Windows renders from the same vector paths.
+    if (arguments.size() > 4 && arguments.at(2) == QStringLiteral("--png")) {
+        const int size = arguments.at(3).toInt();
+        require(size >= 48 && size <= 4096, "Requested PNG logo size is out of range.");
+        require(frame(size).save(arguments.at(4), "PNG"), "Cannot save PNG logo.");
+    } else if (arguments.size() > 2) {
+        // Optional contact sheet is a review artifact, not a runtime asset.
         QImage sheet(760, 292, QImage::Format_ARGB32_Premultiplied);
         sheet.fill(QColor(11, 17, 25));
         QPainter painter(&sheet);
