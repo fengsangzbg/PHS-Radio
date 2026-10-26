@@ -65,26 +65,26 @@ final class GlassRow extends LinearLayout {
 
         paint.setStyle(Paint.Style.FILL);
         paint.setShader(new LinearGradient(0, 0, w, h,
-                new int[]{0x5A2F6B7C, 0x4A1B3A56, 0x6612293F},
+                new int[]{0x262F6B7C, 0x1A1B3A56, 0x3312293F},
                 new float[]{0f, .55f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawRoundRect(bounds, radius, radius, paint);
         paint.setShader(null);
 
         // Specular band: a narrow bright wedge travelling along the row.
         paint.setShader(new LinearGradient(w * (phase * 1.6f - .3f), 0, w * (phase * 1.6f + .12f), h,
-                new int[]{0x00FFFFFF, 0x2EFFFFFF, 0x00FFFFFF}, new float[]{0f, .5f, 1f},
+                new int[]{0x00FFFFFF, 0x12FFFFFF, 0x00FFFFFF}, new float[]{0f, .5f, 1f},
                 Shader.TileMode.CLAMP));
         canvas.drawRoundRect(bounds, radius, radius, paint);
         paint.setShader(null);
 
         // Inner caustic near the leading edge, echoing the aquarium scene.
         paint.setShader(new RadialGradient(w * .18f, h * .10f, w * .55f,
-                new int[]{0x22B9F2FF, 0x00B9F2FF}, null, Shader.TileMode.CLAMP));
+                new int[]{0x10B9F2FF, 0x00B9F2FF}, null, Shader.TileMode.CLAMP));
         canvas.drawRoundRect(bounds, radius, radius, paint);
         paint.setShader(null);
 
         stroke.setStrokeWidth(dp(1f));
-        stroke.setColor(0x5A8FD8E4);
+        stroke.setColor(0x33FFFFFF);
         RectF rim = new RectF(bounds);
         rim.inset(dp(.5f), dp(.5f));
         canvas.drawRoundRect(rim, radius, radius, stroke);
@@ -96,7 +96,7 @@ final class GlassRow extends LinearLayout {
                 float shadowY = art.getBottom() - dp(1);
                 paint.setStyle(Paint.Style.FILL);
                 paint.setShader(new RadialGradient(w / 2f, shadowY, art.getWidth() * .68f,
-                        new int[]{0x73000408, 0x00000408}, null, Shader.TileMode.CLAMP));
+                        new int[]{0x33000408, 0x00000408}, null, Shader.TileMode.CLAMP));
                 RectF shade = new RectF(w / 2f - art.getWidth() * .62f, shadowY - dp(7),
                         w / 2f + art.getWidth() * .62f, shadowY + dp(9));
                 canvas.drawOval(shade, paint);

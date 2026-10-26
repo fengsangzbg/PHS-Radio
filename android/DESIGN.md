@@ -1,5 +1,8 @@
 # 手机端视觉对齐计划（交接文档）
 
+> 2026-10-26：Android 0.1A 正式版发布；0.3.x 的视觉改动已回滚到 0.2.2，再基于 0.2.2 完成本轮玻璃与 AGSL 改造。
+> 本文件保留作后续设计参考。
+
 目标：手机版不是"像电脑"，而是**同一套设计语言的移植**，在手机能做的范围内超越电脑。
 
 当前设备基线：**Android 16**（API 36）。这条很重要——意味着这些能力可以直接用，不必降级：
@@ -30,13 +33,14 @@
 
 ## 二、各区块现状与目标
 
-### 1. 播放 Dock（下一个做）
-- 现状：`LinearLayout` + `glass(26)` 背景 + 一排 `AeroButton`。
-- 目标：整块自绘玻璃面板（`DockPanel` 继承 FrameLayout，`dispatchDraw` 画三明治）；
-  进度条轨道自绘（细槽 + 已播放高光 + 圆点带光晕）；按钮组统一用 `AeroButton` 的新样式。
-- 验收：面板有厚度（上亮下暗）、按钮嵌在面板里而不是浮在上面、进度条拖动手柄有光。
+### 1. 播放 Dock（0.3.1 自绘版已回滚，待重做）
+- 0.3.1 的自绘面板 / 凹槽 / 进度条在真机上出现按压黑框、偶发闪屏，观感也偏塑料，
+  已在 0.3.2 回滚到 0.3.0 的 `LinearLayout + glass(26)` + AeroButton + SeekBar。
+- 重做约束：先只替换进度条，确认无闪屏后再单独动面板；玻璃感靠低不透明度 + 1dp 描边，
+  不做大面积高光和深色凹槽；每一步都装真机截图确认。
+- 备选：沿用旧版透明 Dock，只加"正在播放"发光细线，不再追求整块面板重绘。
 
-### 2. 歌曲行 / 横幅
+### 2. 歌曲行 / 横幅（下一个做）
 - 现状：`GlassRow`（玻璃底 + 扫光 + 果冻）。
 - 目标：封面卡片圆角 12dp、带投影与顶部高光；歌名 15sp 主色、歌手 12sp 次色；
   正在播放的行左侧加一条发光竖线。
@@ -103,7 +107,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\build-preview.ps1
 | `MainActivity.java` | 主界面、Dock、下拉搜索、设置、手势仲裁（翻页 / 下拉） |
 | `OnlinePages.java` | 五个分页、列表适配器、推荐横滑 |
 | `GlassRow.java` | 歌曲行玻璃底 + 扫光 + 果冻（shelf 模式用于货架） |
-| `AeroButton.java` | 胶囊玻璃按钮（已按 JellyButton 重做） |
+| `AeroButton.java` | 胶囊玻璃按钮（已按 JellyButton 重做；已清系统默认背景，按压不再透出黑色 ripple） |
 | `RecordGLView.java` | 唱片着色器 |
 | `CrystalHeartView.java` | 切面水晶爱心 + 加法彩虹光晕 |
 | `AquariumEntrance.java` | 水族箱启动场景 |

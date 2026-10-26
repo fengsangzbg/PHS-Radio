@@ -24,7 +24,7 @@ final class SongPage implements AutoCloseable {
     private ViewGroup host;
     private LinearLayout page,lyricPanel;
     private FrameLayout discPanel;
-    private RecordGLView record;
+    private RecordView record;
     private ScrollView scroll;
     private TextView title,words,status;
     private String song="",songTitle="选择一首音乐",onlineCover="",onlineLyrics="",lyricState="idle",lyricError="";
@@ -43,7 +43,7 @@ final class SongPage implements AutoCloseable {
         if(page!=null)return;host=target;page=new LinearLayout(activity);page.setOrientation(1);page.setPadding(dp(4),dp(8),dp(4),dp(8));
         title=text(songTitle,20);title.setGravity(Gravity.CENTER);title.setMaxLines(2);page.addView(title,new LinearLayout.LayoutParams(-1,-2));
         FrameLayout body=new FrameLayout(activity);page.addView(body,new LinearLayout.LayoutParams(-1,0,1));
-        discPanel=new FrameLayout(activity);record=new RecordGLView(activity);record.playing(playing);discPanel.addView(record,new FrameLayout.LayoutParams(-1,-1));body.addView(discPanel,new FrameLayout.LayoutParams(-1,-1));
+        discPanel=new FrameLayout(activity);record=new RecordView(activity);record.playing(playing);discPanel.addView(record,new FrameLayout.LayoutParams(-1,-1));body.addView(discPanel,new FrameLayout.LayoutParams(-1,-1));
         lyricPanel=new LinearLayout(activity);lyricPanel.setOrientation(1);lyricPanel.setPadding(dp(12),dp(8),dp(12),dp(8));lyricPanel.setBackground(glass());
         LinearLayout bar=new LinearLayout(activity);Button back=new AeroButton(activity);back.setText("返回唱片");back.setOnClickListener(v->{lyricMode=false;displayMode();});bar.addView(back,new LinearLayout.LayoutParams(dp(92),dp(40)));TextView caption=text("歌词",16);caption.setGravity(Gravity.CENTER);bar.addView(caption,new LinearLayout.LayoutParams(0,dp(40),1));Button options=new AeroButton(activity);options.setText("···");options.setOnClickListener(v->options());bar.addView(options,new LinearLayout.LayoutParams(dp(48),dp(40)));lyricPanel.addView(bar);
         status=text("",14);status.setGravity(Gravity.CENTER);status.setOnClickListener(v->retry());lyricPanel.addView(status,new LinearLayout.LayoutParams(-1,-2));
@@ -77,7 +77,7 @@ final class SongPage implements AutoCloseable {
     }
     void pause(){resumed=false;main.removeCallbacks(follow);if(record!=null){record.active(false);record.onPause();}}
     void resume(){resumed=true;if(record!=null)record.onResume();if(page!=null){record.active(!lyricMode);main.removeCallbacks(follow);if(lyricMode)main.post(follow);}}
-    private TextView text(String value,int size){TextView t=new TextView(activity);t.setText(value);t.setTextSize(size);t.setTextColor(0xFFE6FAFF);t.setPadding(dp(6),dp(6),dp(6),dp(6));return t;}
+    private TextView text(String value,int size){TextView t=new TextView(activity);t.setText(value);t.setTextSize(size);t.setTextColor(0xFFE6FAFF);t.setPadding(dp(6),dp(6),dp(6),dp(6));t.setShadowLayer(dp(4),0,dp(1),0xCC000A12);return t;}
     private GradientDrawable glass(){GradientDrawable d=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0x44316E80,0x33122B46});d.setCornerRadius(dp(26));d.setStroke(dp(1),0x4486CEDA);return d;}
     private int dp(int n){return Math.round(n*activity.getResources().getDisplayMetrics().density);}
     public void close(){closed=true;back();main.removeCallbacksAndMessages(null);io.shutdownNow();}

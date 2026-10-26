@@ -38,6 +38,9 @@ public final class MainActivity extends Activity {
     private VerticalVolume sideVolume;
     private FrameLayout root;
     private LinearLayout content;
+    private LinearLayout dockBar;
+    private LinearLayout topBarView;
+    private Bitmap dockBackdrop;
     private TextView now,summary,time;
     private Button play,mode;
     private SeekBar progress;
@@ -53,6 +56,8 @@ public final class MainActivity extends Activity {
     private boolean dragBlocked;
     private TextView pullHint;
     private JSONObject currentTrack;
+    private String currentUri="", currentTitle="";
+    private FavoritesView favoritesView;
     private CrystalHeartView likeButton;
     private Button qualityButton;
     private int qualityIndex;
@@ -73,7 +78,11 @@ public final class MainActivity extends Activity {
         play.setText(i.getBooleanExtra("playing",false)?"Ⅱ":"▶");
         mode.setText(new String[]{"顺序","随机","单曲循环"}[Math.floorMod(i.getIntExtra("playMode",0),3)]);
         boolean playing=i.getBooleanExtra("playing",false);if(playing&&!wasPlaying&&getSharedPreferences("mobile",0).getBoolean("meteors",true))meteor.flash("fire".equals(wallpaper.mode()));wasPlaying=playing;
-        try{String raw=i.getStringExtra("track");currentTrack=(raw==null||raw.isEmpty())?null:new JSONObject(raw);if(currentTrack!=null&&likeButton!=null)likeButton.setLit(isLiked(currentTrack));}catch(Exception ignored){}songPage.online(i.getStringExtra("track"),i.getStringExtra("lyrics"));
+        try{String raw=i.getStringExtra("track");currentTrack=(raw==null||raw.isEmpty())?null:new JSONObject(raw);}catch(Exception ignored){}
+        currentUri=i.getStringExtra("uri")==null?"":i.getStringExtra("uri");
+        currentTitle=i.getStringExtra("title")==null?"":i.getStringExtra("title");
+        if(likeButton!=null)likeButton.setLit(isLiked(activeTrack()));
+        songPage.online(i.getStringExtra("track"),i.getStringExtra("lyrics"));
         songPage.lyricStatus(i.getStringExtra("lyricState"),i.getStringExtra("lyricError"));volumeValue=i.getFloatExtra("volume",1);if(sideVolume!=null)sideVolume.level(volumeValue);
         songPage.state(i.getStringExtra("uri")==null?"":i.getStringExtra("uri"),i.getStringExtra("title"),i.getLongExtra("position",0),playing);
         duration=i.getLongExtra("duration",0);long position=i.getLongExtra("position",0);lastPosition=position;
@@ -87,7 +96,7 @@ public final class MainActivity extends Activity {
         accounts=new MusicAccounts(this);accounts.onChanged=()->renderRoute();songPage=new SongPage(this);
         getWindow().setStatusBarColor(Color.TRANSPARENT);getWindow().setNavigationBarColor(Color.TRANSPARENT);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE|View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-        root=new FrameLayout(this);wallpaper=new WallpaperLayer(this);root.addView(wallpaper.view(),new FrameLayout.LayoutParams(-1,-1));
+        root=new FrameLayout(this);wallpaper=new WallpaperLayer(this);wallpaper.onChanged=()->{dockBackdrop=null;if(dockBar!=null)dockBar.postDelayed(this::captureDockBackdrop,350);if(topBarView!=null)topBarView.postDelayed(this::refreshTopBar,350);};root.addView(wallpaper.view(),new FrameLayout.LayoutParams(-1,-1));
         content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(16),dp(36),dp(16),dp(24));root.addView(content,new FrameLayout.LayoutParams(-1,-1));
         root.setOnApplyWindowInsetsListener((v,insets)->{
             if(Build.VERSION.SDK_INT>=30){android.graphics.Insets safe=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());content.setPadding(dp(16)+safe.left,dp(10)+safe.top,dp(16)+safe.right,dp(10)+safe.bottom);}
@@ -98,21 +107,27 @@ public final class MainActivity extends Activity {
         TextView hint=text("↓  下拉此处呼出搜索框",11,false);
         hint.setGravity(Gravity.CENTER);
         hint.setTextColor(0xCCCFEFF7);
-        hint.setBackground(glass(14));
+        hint.setBackground(hintGlass(14));
         hint.setPadding(dp(14),0,dp(14),0);
+        LinearLayout topBar=new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.VERTICAL);
+        topBar.setPadding(dp(6),dp(6),dp(6),dp(6));
+        topBar.setBackground(glass(22));
+        content.addView(topBar);
+        topBarView=topBar;
         LinearLayout.LayoutParams hintSize=new LinearLayout.LayoutParams(-2,dp(26));
         hintSize.gravity=Gravity.CENTER_HORIZONTAL;hintSize.topMargin=dp(2);hintSize.bottomMargin=dp(6);
-        content.addView(hint,hintSize);
+        topBar.addView(hint,hintSize);
         android.animation.ObjectAnimator bob=android.animation.ObjectAnimator.ofFloat(hint,"translationY",0f,dp(5));
         bob.setDuration(900);bob.setRepeatMode(android.animation.ValueAnimator.REVERSE);
         bob.setRepeatCount(android.animation.ValueAnimator.INFINITE);bob.start();        LinearLayout header=row();header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.logo_phs);header.addView(logo,new LinearLayout.LayoutParams(dp(40),dp(40)));logo.setOnClickListener(v->v.animate().rotationBy(360).scaleX(.85f).scaleY(.85f).setDuration(250).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator(3)).setDuration(400).start()).start());
         TextView brand=text("PHS Radio",19,true);brandView=brand;brand.setOnClickListener(v->{v.animate().rotationBy(360).scaleX(1.08f).scaleY(.94f).setDuration(330).withEndAction(()->v.animate().scaleX(1).scaleY(1).setInterpolator(new android.view.animation.OvershootInterpolator()).setDuration(300).start()).start();});header.addView(brand,new LinearLayout.LayoutParams(0,dp(54),1));
         Button account=button("账号",()->accounts.show());header.addView(account,new LinearLayout.LayoutParams(dp(68),dp(46)));
-        Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));content.addView(header);pageParts.add(header);topParts.add(header);
+        Button theme=button("设置",()->showSettings());header.addView(theme,new LinearLayout.LayoutParams(dp(76),dp(46)));topBar.addView(header);pageParts.add(header);topParts.add(header);
         LinearLayout actions=row();actions.setPadding(0,dp(10),0,dp(8));
         EditText search=new EditText(this);search.setSingleLine();search.setTextColor(Color.WHITE);search.setHintTextColor(0xFFA8CACF);search.setHint("搜索本地、酷狗、网易云歌曲或歌手");search.setTextSize(14);search.setPadding(dp(16),0,dp(12),0);search.setBackground(glass(24));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);headerSearch=search;
-        LinearLayout nav=row();navBar=nav;content.addView(nav);pageParts.add(nav);topParts.add(nav);
+        LinearLayout nav=row();navBar=nav;topBar.addView(nav);pageParts.add(nav);topParts.add(nav);
         LinearLayout bodyRow=row();content.addView(bodyRow,new LinearLayout.LayoutParams(-1,0,1));pageParts.add(bodyRow);FrameLayout body=new FrameLayout(this);bodyRow.addView(body,new LinearLayout.LayoutParams(0,-1,1));sideVolume=new VerticalVolume(this,value->command(new Intent(this,PlaybackService.class).setAction("volume").putExtra("volume",value),false));sideVolume.level(getSharedPreferences("mobile",0).getFloat("volume",1));LinearLayout.LayoutParams rail=new LinearLayout.LayoutParams(dp(32),dp(168));rail.gravity=Gravity.CENTER_VERTICAL;rail.leftMargin=dp(6);bodyRow.addView(sideVolume,rail);sideVolume.setVisibility(View.GONE);onlineHost=new FrameLayout(this);body.addView(onlineHost,new FrameLayout.LayoutParams(-1,-1));
         localScreen=new LinearLayout(this);localScreen.setOrientation(1);localScreen.setVisibility(View.GONE);body.addView(localScreen,new FrameLayout.LayoutParams(-1,-1));
         pages=new OnlinePages(this,onlineHost,()->queue());pages.onCentre=this::selectCentre;pages.onConnect=()->accounts.show();pages.onRouteSwipe=dx->{if(!stepPage(dx<0?1:-1))return false;lyricRequested=false;renderRoute();onlineHost.setTranslationX(dx<0?dp(38):-dp(38));onlineHost.setAlpha(.6f);onlineHost.animate().translationX(0).alpha(1).setDuration(240).start();return true;};
@@ -124,7 +139,7 @@ public final class MainActivity extends Activity {
         search.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence value,int start,int before,int count){if(searchPending!=null)searchHandler.removeCallbacks(searchPending);String query=value.toString();updateSuggestions(query);}public void afterTextChanged(Editable e){}});
         search.setOnEditorActionListener((v,action,event)->{if(action==android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH){submitSearch(search.getText().toString());((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(),0);return true;}return false;});
         renderRoute();
-        createDock();songPage.home(content);restoreQueue();handleShare(getIntent());
+        createDock();topBarView.post(this::refreshTopBar);songPage.home(content);restoreQueue();handleShare(getIntent());
         // The aquarium scene sits on top of the finished UI, exactly like the
         // Windows build: tap to zoom in, then drop the view entirely.
         buildSearchOverlay();
@@ -287,7 +302,7 @@ public final class MainActivity extends Activity {
         for(int i=0;i<navTabs.size();i++){
             Button tab=navTabs.get(i);
             boolean on=i==active;
-            ((AeroButton)tab).setActive(on);
+            if(tab instanceof AeroButton)((AeroButton)tab).setActive(on);
             tab.setTextColor(on?0xFFFFFFFF:0xFFF0FCFF);
             if(on){
                 tab.setScaleX(.94f);tab.setScaleY(.94f);
@@ -378,12 +393,13 @@ public final class MainActivity extends Activity {
     private void showOnline(){isLocal=false;onlineHost.setVisibility(View.VISIBLE);localScreen.setVisibility(View.GONE);}
     @Override public void onBackPressed(){if(songPage.showingLyrics()){selectCentre();return;}if(isLocal){selectCentre();}else if(pages.isRoutePage()){if(route.index()!=2)selectCentre();else super.onBackPressed();}else if(!pages.back())selectCentre();}
     private void createDock(){
-        LinearLayout dock=new LinearLayout(this);dock.setOrientation(1);dock.setPadding(dp(10),dp(6),dp(10),dp(4));dock.setBackground(glass(26));
-        now=text("选择一首音乐",15,true);now.setSingleLine();now.setEllipsize(TextUtils.TruncateAt.END);now.setOnClickListener(v->selectCentre());LinearLayout titleRow=row();titleRow.setGravity(Gravity.CENTER_VERTICAL);titleRow.addView(now,new LinearLayout.LayoutParams(0,dp(26),1));likeButton=new CrystalHeartView(this);likeButton.setOnClickListener(v->toggleLike());titleRow.addView(likeButton,new LinearLayout.LayoutParams(dp(40),dp(34)));Button share=button("分享",()->shareCurrent());share.setTextSize(12);titleRow.addView(share,new LinearLayout.LayoutParams(dp(54),dp(30)));dock.addView(titleRow);
+        LinearLayout dock=new LinearLayout(this);dock.setOrientation(1);dock.setPadding(dp(10),dp(6),dp(10),dp(4));dock.setBackground(dockFallback(26));
+        now=text("选择一首音乐",15,true);now.setShadowLayer(dp(4),0,dp(1),0xCC000A12);now.setSingleLine();now.setEllipsize(TextUtils.TruncateAt.END);now.setOnClickListener(v->selectCentre());LinearLayout titleRow=row();titleRow.setGravity(Gravity.CENTER_VERTICAL);titleRow.addView(now,new LinearLayout.LayoutParams(0,dp(26),1));likeButton=new CrystalHeartView(this);likeButton.setOnClickListener(v->toggleLike());likeButton.setOnLongClickListener(v->{showFavorites();return true;});titleRow.addView(likeButton,new LinearLayout.LayoutParams(dp(40),dp(34)));Button share=button("分享",()->shareCurrent());share.setTextSize(12);titleRow.addView(share,new LinearLayout.LayoutParams(dp(54),dp(30)));dock.addView(titleRow);
         LinearLayout transport=row();transport.setGravity(Gravity.CENTER_VERTICAL);mode=button("顺序",()->send("shuffle"));mode.setTextSize(12);transport.addView(mode,new LinearLayout.LayoutParams(0,dp(40),1.3f));transport.addView(button("❮",()->send("previous")),new LinearLayout.LayoutParams(0,dp(40),.8f));play=button("▶",()->send("toggle"));transport.addView(play,new LinearLayout.LayoutParams(0,dp(44),1));transport.addView(button("❯",()->send("next")),new LinearLayout.LayoutParams(0,dp(40),.8f));transport.addView(button("停止",()->send("stop")),new LinearLayout.LayoutParams(0,dp(40),1));transport.addView(button("歌词",()->selectLyrics()),new LinearLayout.LayoutParams(0,dp(40),1));dock.addView(transport);
-        LinearLayout progressRow=row();progressRow.setGravity(Gravity.CENTER_VERTICAL);time=text("0:00 / 0:00",10,false);time.setTextColor(0xFFB2DBDE);progressRow.addView(time,new LinearLayout.LayoutParams(dp(85),dp(28)));progress=new SeekBar(this);progress.setMax(1000);progressRow.addView(progress,new LinearLayout.LayoutParams(0,dp(30),1));qualityIndex=getSharedPreferences("mobile",0).getInt("qualityIndex",0);qualityButton=button("音质·"+qualityLabels[qualityIndex],()->cycleQuality());qualityButton.setTextSize(11);progressRow.addView(qualityButton,new LinearLayout.LayoutParams(dp(78),dp(30)));dock.addView(progressRow);
+        LinearLayout progressRow=row();progressRow.setGravity(Gravity.CENTER_VERTICAL);time=text("0:00 / 0:00",10,false);time.setTextColor(0xFFB2DBDE);time.setShadowLayer(dp(3),0,dp(1),0xCC000A12);progressRow.addView(time,new LinearLayout.LayoutParams(dp(85),dp(28)));progress=new SeekBar(this);progress.setMax(1000);progressRow.addView(progress,new LinearLayout.LayoutParams(0,dp(30),1));qualityIndex=getSharedPreferences("mobile",0).getInt("qualityIndex",0);qualityButton=button("音质·"+qualityLabels[qualityIndex],()->cycleQuality());qualityButton.setTextSize(11);progressRow.addView(qualityButton,new LinearLayout.LayoutParams(dp(78),dp(30)));dock.addView(progressRow);
         progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar s,int p,boolean user){}public void onStartTrackingTouch(SeekBar s){seeking=true;}public void onStopTrackingTouch(SeekBar s){seeking=false;command(new Intent(MainActivity.this,PlaybackService.class).setAction("seek").putExtra("position",duration*s.getProgress()/1000),false);}});
         LinearLayout.LayoutParams size=new LinearLayout.LayoutParams(-1,-2);size.topMargin=dp(6);content.addView(dock,size);
+        dockBar=dock;dock.post(this::captureDockBackdrop);
     }
     private String[] qualityLabels={"标准","高品质","无损"};
     private String[] qualityKeys={"128","320","flac"};
@@ -411,6 +427,27 @@ public final class MainActivity extends Activity {
         return track.optString("platform")+"|"+track.optString("id",track.optString("hash"));
     }
 
+    /** A local file is a track too; the collection keeps both kinds side by side. */
+    private JSONObject localTrack(){
+        if(currentUri.isEmpty())return null;
+        try{
+            JSONObject track=new JSONObject();
+            track.put("platform","local");
+            track.put("id",currentUri);
+            track.put("uri",currentUri);
+            track.put("title",currentTitle);
+            return track;
+        }catch(JSONException ignored){return null;}
+    }
+
+    private JSONObject activeTrack(){return currentTrack!=null?currentTrack:localTrack();}
+
+    private void saveFavorites(java.util.List<JSONObject> list){
+        JSONArray array=new JSONArray();
+        for(JSONObject item:list)array.put(item);
+        getSharedPreferences("mobile",0).edit().putString("favorites",array.toString()).apply();
+    }
+
     private boolean isLiked(JSONObject track){
         String key=trackKey(track);
         if(key.isEmpty())return false;
@@ -419,30 +456,81 @@ public final class MainActivity extends Activity {
     }
 
     private void toggleLike(){
-        if(currentTrack==null){Toast.makeText(this,"先播放一首歌",Toast.LENGTH_SHORT).show();return;}
+        JSONObject track=activeTrack();
+        if(track==null){Toast.makeText(this,"先播放一首歌",Toast.LENGTH_SHORT).show();return;}
         java.util.List<JSONObject> list=favorites();
-        String key=trackKey(currentTrack);
+        String key=trackKey(track);
         boolean removed=false;
         for(int i=0;i<list.size();i++){
             if(key.equals(trackKey(list.get(i)))){list.remove(i);removed=true;break;}
         }
-        if(!removed)list.add(0,currentTrack);
-        JSONArray array=new JSONArray();
-        for(JSONObject item:list)array.put(item);
-        getSharedPreferences("mobile",0).edit().putString("favorites",array.toString()).apply();
-        if(likeButton!=null)likeButton.setLit(isLiked(currentTrack));
-        if(!removed)playHeart();
-        Toast.makeText(this,removed?"已取消收藏":"已收藏到「我喜欢的音乐」",Toast.LENGTH_SHORT).show();
+        if(!removed)list.add(0,track);
+        saveFavorites(list);
+        if(likeButton!=null)likeButton.setLit(isLiked(track));
+        if(favoritesView!=null)favoritesView.refresh();
+        if(!removed){
+            playHeart();
+            Toast.makeText(this,"已收藏到「新大地收藏」",Toast.LENGTH_SHORT).show();
+        }else Toast.makeText(this,"已从收藏移除",Toast.LENGTH_SHORT).show();
     }
 
     private void playHeart(){
-        final CrystalHeartView heart=new CrystalHeartView(this);
-        heart.celebrate();
-        FrameLayout.LayoutParams size=new FrameLayout.LayoutParams(dp(200),dp(200),Gravity.CENTER);
-        root.addView(heart,size);
-        heart.setScaleX(.4f);heart.setScaleY(.4f);heart.animate().scaleX(1.15f).scaleY(1.15f).setDuration(320)
-            .setInterpolator(new android.view.animation.OvershootInterpolator(2f))
-            .withEndAction(()->heart.animate().alpha(0f).setDuration(420).withEndAction(()->root.removeView(heart)).start()).start();
+        final HeartBurstView burst=new HeartBurstView(this);
+        root.addView(burst,new FrameLayout.LayoutParams(-1,-1));
+        root.bringChildToFront(burst);
+        burst.burst();
+        burst.postDelayed(()->burst.animate().alpha(0f).setDuration(320)
+                .withEndAction(()->root.removeView(burst)).start(),1250);
+    }
+
+    private void showFavorites(){
+        if(favoritesView!=null)return;
+        favoritesView=new FavoritesView(this,new FavoritesView.Host(){
+            public java.util.List<JSONObject> tracks(){return favorites();}
+            public void play(JSONObject track){playFavorite(track);}
+            public void remove(JSONObject track){removeFavorite(track);}
+            public void close(){closeFavorites();}
+        });
+        root.addView(favoritesView,new FrameLayout.LayoutParams(-1,-1));
+        root.bringChildToFront(favoritesView);
+    }
+
+    private void closeFavorites(){
+        if(favoritesView==null)return;
+        root.removeView(favoritesView);
+        favoritesView=null;
+    }
+
+    private void playFavorite(JSONObject track){
+        if(track==null)return;
+        closeFavorites();
+        if("local".equals(track.optString("platform"))){
+            try{
+                JSONArray queue=new JSONArray();
+                JSONObject item=new JSONObject();
+                item.put("uri",track.optString("uri"));
+                item.put("title",track.optString("title"));
+                queue.put(item);
+                command(new Intent(this,PlaybackService.class).setAction("play")
+                        .putExtra("queue",queue.toString()).putExtra("index",0),true);
+            }catch(JSONException ignored){}
+        }else{
+            JSONArray queue=new JSONArray();
+            queue.put(track);
+            pages.play(queue,0);
+        }
+    }
+
+    private void removeFavorite(JSONObject track){
+        String key=trackKey(track);
+        java.util.List<JSONObject> list=favorites();
+        for(int i=0;i<list.size();i++){
+            if(key.equals(trackKey(list.get(i)))){list.remove(i);break;}
+        }
+        saveFavorites(list);
+        if(likeButton!=null)likeButton.setLit(isLiked(activeTrack()));
+        if(favoritesView!=null)favoritesView.refresh();
+        Toast.makeText(this,"已从收藏移除",Toast.LENGTH_SHORT).show();
     }
 
     private String shareUrl(JSONObject track){
@@ -521,6 +609,7 @@ public final class MainActivity extends Activity {
             panel.addView(choice,wide);
         }
         panel.addView(text("主题与音量",14,false),new LinearLayout.LayoutParams(-1,dp(26)));        panel.addView(rail,wide);
+        panel.addView(button("新大地收藏",()->{dialog.dismiss();showFavorites();}),wide);
         panel.addView(button("主题 · 背景与配色",()->{dialog.dismiss();showThemes();}),wide);
         panel.addView(button("导入本地音乐",()->{dialog.dismiss();choose(MUSIC,"audio/*");}),wide);
         panel.addView(text("音量",14,false),new LinearLayout.LayoutParams(-1,dp(30)));
@@ -547,14 +636,111 @@ public final class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);handleShare(intent);}
     private void handleShare(Intent intent){if(Intent.ACTION_SEND.equals(intent.getAction())){Uri uri=intent.getParcelableExtra(Intent.EXTRA_STREAM);String mime=intent.getType();if(uri!=null&&mime!=null&&(mime.startsWith("video/")||mime.startsWith("image/")))wallpaper.importShared(uri,mime);}}
     @Override protected void onStart(){super.onStart();if(Build.VERSION.SDK_INT>=33)registerReceiver(state,new IntentFilter(PlaybackService.STATE),Context.RECEIVER_NOT_EXPORTED);else registerReceiver(state,new IntentFilter(PlaybackService.STATE));registered=true;send("status");}
-    @Override protected void onResume(){super.onResume();accounts.resumePolling();wallpaper.resume();songPage.resume();pages.resume();}
+    @Override protected void onResume(){super.onResume();accounts.resumePolling();wallpaper.resume();songPage.resume();pages.resume();if(dockBar!=null&&dockBackdrop==null)dockBar.post(this::captureDockBackdrop);if(topBarView!=null)topBarView.post(this::refreshTopBar);}
     @Override protected void onPause(){pages.pause();meteor.stop();songPage.pause();wallpaper.pause();super.onPause();}
     @Override protected void onStop(){if(registered){unregisterReceiver(state);registered=false;}super.onStop();}
     @Override protected void onDestroy(){searchHandler.removeCallbacksAndMessages(null);pages.close();songPage.close();accounts.close();wallpaper.close();super.onDestroy();}
     private LinearLayout row(){LinearLayout view=new LinearLayout(this);view.setOrientation(LinearLayout.HORIZONTAL);return view;}
     private int dp(float value){return Math.round(value*getResources().getDisplayMetrics().density);}
-    private TextView text(String label,int size,boolean bold){TextView view=new TextView(this);view.setText(label);view.setTextColor(0xFFF0FCFF);view.setTextSize(size);if(bold)view.setTypeface(null,android.graphics.Typeface.BOLD);return view;}
-    private GradientDrawable glass(int radius){GradientDrawable shape=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0x553C727A,0x5020304A,0x88202D43});shape.setCornerRadius(dp(radius));shape.setStroke(dp(1),0x558BDFE3);return shape;}
-    private Button button(String label,Runnable callback){Button view=new AeroButton(this);view.setText(label);view.setTextColor(0xFFF0FCFF);view.setTextSize(14);view.setAllCaps(false);view.setMinWidth(0);view.setMinimumWidth(0);view.setPadding(dp(8),0,dp(8),0);view.setOnClickListener(v->callback.run());return view;}
+    private TextView text(String label,int size,boolean bold){TextView view=new TextView(this);view.setText(label);view.setTextColor(0xFFF0FCFF);view.setTextSize(size);if(bold)view.setTypeface(null,android.graphics.Typeface.BOLD);view.setShadowLayer(dp(4),0,dp(1),0xCC000A12);return view;}
+    private GradientDrawable glass(int radius){GradientDrawable shape=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0x263C727A,0x1A20304A,0x33202D43});shape.setCornerRadius(dp(radius));shape.setStroke(dp(1),0x33FFFFFF);return shape;}
+    private GradientDrawable hintGlass(int radius){GradientDrawable shape=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0x1F3C727A,0x1420304A,0x1F202D43});shape.setCornerRadius(dp(radius));shape.setStroke(dp(1),0x33FFFFFF);return shape;}
+    /** PC glass fallback when the window cannot be copied. */
+    private android.graphics.drawable.Drawable dockFallback(int radius){
+        GradientDrawable body=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0xE61B3D4E,0xDB0D2233,0xF00A1826});
+        body.setCornerRadius(dp(radius));
+        body.setStroke(dp(1),0x99B8EAF4);
+        GradientDrawable gloss=new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0x2EFFFFFF,0x00FFFFFF});
+        gloss.setCornerRadius(dp(radius));
+        return new LayerDrawable(new android.graphics.drawable.Drawable[]{body,gloss});
+    }
+
+    /**
+     * The PC dock is blurred backdrop + a thin glass wash, not a black slab.
+     * The blurred window region is drawn inside the rounded dock, then the
+     * desktop glass layers (body, accent, gloss, rim) sit on top.
+     */
+    private android.graphics.drawable.Drawable dockGlass(int w,int h){
+        if(dockBackdrop==null||w<=0||h<=0)return dockFallback(26);
+        Bitmap out=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);
+        Canvas canvas=new Canvas(out);
+        Path shape=new Path();
+        shape.addRoundRect(new RectF(0,0,w,h),dp(26),dp(26),Path.Direction.CW);
+        canvas.clipPath(shape);
+        canvas.drawBitmap(dockBackdrop,null,new RectF(0,0,w,h),null);
+
+        Paint wash=new Paint(Paint.ANTI_ALIAS_FLAG);
+        wash.setShader(new LinearGradient(0,0,0,h,
+                new int[]{0x4D10262E,0x3304141D,0x4D04101A},
+                new float[]{0f,.55f,1f},Shader.TileMode.CLAMP));
+        canvas.drawRect(0,0,w,h,wash);
+        wash.setShader(new LinearGradient(0,0,0,h*.45f,
+                new int[]{0x22F0FFFF,0x05FFFFFF,0x00FFFFFF},
+                new float[]{0f,.6f,1f},Shader.TileMode.CLAMP));
+        canvas.drawRect(0,0,w,h*.45f,wash);
+        wash.setShader(null);
+
+        Paint edge=new Paint(Paint.ANTI_ALIAS_FLAG);
+        edge.setStyle(Paint.Style.STROKE);
+        edge.setStrokeWidth(dp(1));
+        edge.setColor(0x40FFFFFF);
+        canvas.drawRoundRect(new RectF(dp(.5f),dp(.5f),w-dp(.5f),h-dp(.5f)),dp(26),dp(26),edge);
+        return new BitmapDrawable(getResources(),out);
+    }
+
+    private void captureDockBackdrop(){
+        if(dockBar==null)return;
+        final int w=dockBar.getWidth(),h=dockBar.getHeight();
+        if(w<=0||h<=0)return;
+        Bitmap shot=wallpaper!=null?wallpaper.snapshot():null;
+        if(shot==null){
+            dockBar.setBackground(dockFallback(26));
+            return;
+        }
+        Bitmap small=Bitmap.createScaledBitmap(shot,Math.max(1,w/18),Math.max(1,h/18),true);
+        dockBackdrop=Bitmap.createScaledBitmap(small,w,h,true);
+        dockBar.setBackground(dockGlass(w,h));
+    }
+
+    /** The desktop top bar: one continuous frosted strip behind logo, nav and search. */
+    private android.graphics.drawable.Drawable barGlass(Bitmap blurred,int w,int h){
+        if(blurred==null||w<=0||h<=0)return glass(22);
+        Bitmap out=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);
+        Canvas canvas=new Canvas(out);
+        Path shape=new Path();
+        shape.addRoundRect(new RectF(0,0,w,h),dp(22),dp(22),Path.Direction.CW);
+        canvas.clipPath(shape);
+        canvas.drawBitmap(blurred,null,new RectF(0,0,w,h),null);
+
+        Paint wash=new Paint(Paint.ANTI_ALIAS_FLAG);
+        wash.setShader(new LinearGradient(0,0,0,h,
+                new int[]{0x6610262E,0x3304141D,0x1404101A},
+                new float[]{0f,.55f,1f},Shader.TileMode.CLAMP));
+        canvas.drawRect(0,0,w,h,wash);
+        wash.setShader(new LinearGradient(0,0,0,h*.42f,
+                new int[]{0x22F0FFFF,0x05FFFFFF,0x00FFFFFF},
+                new float[]{0f,.6f,1f},Shader.TileMode.CLAMP));
+        canvas.drawRect(0,0,w,h*.42f,wash);
+        wash.setShader(null);
+
+        Paint edge=new Paint(Paint.ANTI_ALIAS_FLAG);
+        edge.setStyle(Paint.Style.STROKE);
+        edge.setStrokeWidth(dp(1));
+        edge.setColor(0x40FFFFFF);
+        canvas.drawRoundRect(new RectF(dp(.5f),dp(.5f),w-dp(.5f),h-dp(.5f)),dp(22),dp(22),edge);
+        return new BitmapDrawable(getResources(),out);
+    }
+
+    private void refreshTopBar(){
+        if(topBarView==null)return;
+        final int w=topBarView.getWidth(),h=topBarView.getHeight();
+        if(w<=0||h<=0)return;
+        Bitmap shot=wallpaper!=null?wallpaper.snapshot():null;
+        if(shot==null)return;
+        Bitmap small=Bitmap.createScaledBitmap(shot,Math.max(1,w/18),Math.max(1,h/18),true);
+        Bitmap blurred=Bitmap.createScaledBitmap(small,w,h,true);
+        topBarView.setBackground(barGlass(blurred,w,h));
+    }
+    private Button button(String label,Runnable callback){Button view=new AeroButton(this);view.setText(label);view.setTextColor(0xFFEAF3FA);view.setTextSize(14);view.setAllCaps(false);view.setMinWidth(0);view.setMinimumWidth(0);view.setPadding(dp(8),0,dp(8),0);view.setOnClickListener(v->callback.run());return view;}
     private static String format(long ms){long seconds=ms/1000;return String.format(Locale.ROOT,"%d:%02d",seconds/60,seconds%60);}
 }

@@ -84,7 +84,7 @@ final class OnlinePages implements AutoCloseable {
     private ImageView cover(JSONObject song){ImageView view=new ImageView(activity);view.setScaleType(ImageView.ScaleType.CENTER_CROP);images.load(view,song);return view;}
     private ImageView cover(String url){ImageView view=new ImageView(activity);view.setScaleType(ImageView.ScaleType.CENTER_CROP);images.load(view,url);return view;}
     private LinearLayout column(){LinearLayout v=new LinearLayout(activity);v.setOrientation(1);return v;}
-    private TextView text(String value,int size,boolean bold){TextView t=new TextView(activity);t.setText(value);t.setTextSize(size);t.setTextColor(0xFFE6FAFF);t.setPadding(dp(6),dp(8),dp(6),dp(8));if(bold)t.setTypeface(null,Typeface.BOLD);return t;}
+    private TextView text(String value,int size,boolean bold){TextView t=new TextView(activity);t.setText(value);t.setTextSize(size);t.setTextColor(0xFFE6FAFF);t.setPadding(dp(6),dp(8),dp(6),dp(8));if(bold)t.setTypeface(null,Typeface.BOLD);t.setShadowLayer(dp(4),0,dp(1),0xCC000A12);return t;}
     private Button button(String title,Runnable action){Button b=new AeroButton(activity);b.setText(title);b.setOnClickListener(v->action.run());return b;}
     private EditText searchBox(String hint){EditText e=new EditText(activity);e.setSingleLine();e.setTextColor(Color.WHITE);e.setHintTextColor(0xFF9CC4CE);e.setHint(hint);e.setTextSize(14);e.setPadding(dp(14),0,dp(14),0);e.setBackground(glass());return e;}
     private GradientDrawable glass(){GradientDrawable d=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0x66327683,0x55133250});d.setCornerRadius(dp(24));d.setStroke(dp(1),0x557DCAD6);return d;}

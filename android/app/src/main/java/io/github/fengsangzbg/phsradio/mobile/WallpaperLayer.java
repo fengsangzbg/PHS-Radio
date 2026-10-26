@@ -3,6 +3,8 @@ package io.github.fengsangzbg.phsradio.mobile;
 import android.app.Activity;
 import android.content.*;
 import android.graphics.*;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaPlayer;
 import android.net.Uri;
@@ -22,6 +24,7 @@ final class WallpaperLayer implements TextureView.SurfaceTextureListener {
     private MediaPlayer decoder;
     private Surface surface;
     private String mode="water",source="";
+    Runnable onChanged;
     private int generation;
     private boolean resumed,prepared;
     WallpaperLayer(Activity activity){
@@ -35,6 +38,26 @@ final class WallpaperLayer implements TextureView.SurfaceTextureListener {
     }
     View view(){return host;}
     String mode(){return mode;}
+
+    /** A frame of whatever is currently behind the player, for the dock glass. */
+    Bitmap snapshot(){
+        if(video.getVisibility()==View.VISIBLE){
+            try{Bitmap frame=video.getBitmap();if(frame!=null)return frame;}catch(Exception ignored){}
+        }
+        if(image.getVisibility()==View.VISIBLE){
+            Drawable drawable=image.getDrawable();
+            if(drawable instanceof BitmapDrawable)return ((BitmapDrawable)drawable).getBitmap();
+        }
+        if(host.getWidth()>0&&host.getHeight()>0){
+            int w=Math.max(1,host.getWidth()/4),h=Math.max(1,host.getHeight()/4);
+            Bitmap frame=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);
+            Canvas canvas=new Canvas(frame);
+            canvas.scale(w/(float)host.getWidth(),h/(float)host.getHeight());
+            host.draw(canvas);
+            return frame;
+        }
+        return null;
+    }
     private void releaseVideo(){prepared=false;if(decoder!=null){decoder.release();decoder=null;}}
     void set(String selected,String uri){
         String previous=source;
@@ -60,10 +83,11 @@ final class WallpaperLayer implements TextureView.SurfaceTextureListener {
                         double ratio=Math.min(1,Math.sqrt(12000000.0/((double)w*h)));
                         if(ratio<1)decoder.setTargetSize(Math.max(1,(int)(w*ratio)),Math.max(1,(int)(h*ratio)));
                     });
-                    activity.runOnUiThread(()->{if(current==generation&&!activity.isDestroyed()){image.setImageBitmap(bitmap);image.setVisibility(View.VISIBLE);}});
+                    activity.runOnUiThread(()->{if(current==generation&&!activity.isDestroyed()){image.setImageBitmap(bitmap);image.setVisibility(View.VISIBLE);if(onChanged!=null)onChanged.run();}});
                 }catch(Exception e){activity.runOnUiThread(()->{if(current==generation)failed();});}
             });
         }
+        if(onChanged!=null)onChanged.run();
     }
     void importShared(Uri uri,String mime){
         final int current=++generation;
