@@ -2,6 +2,7 @@
 // g++ -std=c++17 -O2 tools/generate-app-icon.cpp $(pkg-config --cflags --libs Qt6Gui)
 //     -lgdi32 -o build-release-bin/generate-app-icon.exe
 // Run: generate-app-icon.exe resources
+// Run: generate-app-icon.exe resources --plate   (rounded tile matching the Android launcher)
 // This generator is the editable vector source for SVG, PNG and all ICO sizes.
 // It uses paths instead of a system font, so the P remains identical everywhere.
 #include <QGuiApplication>
@@ -124,6 +125,24 @@ QPainterPath path(const QString &source)
     return result;
 }
 
+// The Android launcher draws the mark on an opaque rounded tile. Windows uses
+// the same tile so both platforms show one icon, with transparent corners.
+const Gradient plateGlass{
+    "plate-glass", {46, 10}, {452, 512},
+    {{0, QColor(70, 158, 186)}, {.44, QColor(28, 104, 132)}, {1, QColor(3, 38, 57)}}};
+
+constexpr qreal plateRadius = 92.0;
+constexpr qreal plateLogoScale = 0.92;
+
+void paintPlate(QPainter &painter)
+{
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(plateGlass.paint());
+    QPainterPath tile;
+    tile.addRoundedRect(QRectF(0, 0, 512, 512), plateRadius, plateRadius);
+    painter.drawPath(tile);
+}
+
 void paintLogo(QPainter &painter, bool withArms = true, bool withCore = true)
 {
     painter.setRenderHint(QPainter::Antialiasing);
@@ -172,7 +191,7 @@ void paintLogo(QPainter &painter, bool withArms = true, bool withCore = true)
     }
 }
 
-QImage frame(int size, bool withArms = true, bool withCore = true)
+QImage frame(int size, bool withArms = true, bool withCore = true, bool withPlate = false)
 {
     constexpr int supersampling = 4;
     QImage image(size * supersampling, size * supersampling, QImage::Format_ARGB32_Premultiplied);
@@ -180,9 +199,25 @@ QImage frame(int size, bool withArms = true, bool withCore = true)
     {
         QPainter painter(&image);
         painter.scale(image.width() / 512.0, image.height() / 512.0);
+        if (withPlate) {
+            paintPlate(painter);
+            painter.translate(256, 256);
+            painter.scale(plateLogoScale, plateLogoScale);
+            painter.translate(-256, -256);
+        }
         paintLogo(painter, withArms, withCore);
     }
-    return image.scaled(size, size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    const QImage scaled = image.scaled(size, size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    if (!withPlate)
+        return scaled;
+    // Downscaling the rounded tile grazes the extreme corner pixel with a few
+    // percent coverage; keep the four corners fully transparent like the phone raster.
+    QImage result = scaled;
+    for (int y : {0, size - 1}) {
+        for (int x : {0, size - 1})
+            result.setPixelColor(x, y, QColor(0, 0, 0, 0));
+    }
+    return result;
 }
 
 QString svgSource()
@@ -278,6 +313,7 @@ int main(int argc, char **argv)
 #endif
     QGuiApplication app(argc, argv);
     const QStringList arguments = app.arguments();
+    const bool withPlate = arguments.contains(QStringLiteral("--plate"));
     const QString outputRoot = arguments.size() > 1 ? arguments.at(1) : QStringLiteral("resources");
     require(QDir().mkpath(outputRoot), "Cannot create artwork output directory.");
     const QDir output(outputRoot);
@@ -291,7 +327,7 @@ int main(int argc, char **argv)
     const QVector<int> sizes{16, 20, 24, 32, 40, 48, 64, 128, 256};
     QVector<QByteArray> pngs;
     for (int size : sizes) {
-        const QImage image = frame(size);
+        const QImage image = frame(size, true, true, withPlate);
         require(image.pixelColor(0, 0).alpha() == 0 && image.pixelColor(size - 1, size - 1).alpha() == 0,
                 "The icon's corner background must remain transparent.");
         QByteArray png;
@@ -330,8 +366,8 @@ int main(int argc, char **argv)
     } else if (arguments.size() > 4 && arguments.at(2) == QStringLiteral("--png")) {
         const int size = arguments.at(3).toInt();
         require(size >= 48 && size <= 4096, "Requested PNG logo size is out of range.");
-        require(frame(size).save(arguments.at(4), "PNG"), "Cannot save PNG logo.");
-    } else if (arguments.size() > 2) {
+        require(frame(size, true, true, withPlate).save(arguments.at(4), "PNG"), "Cannot save PNG logo.");
+    } else if (arguments.size() > 2 && arguments.at(2) != QStringLiteral("--plate")) {
         // Optional contact sheet is a review artifact, not a runtime asset.
         QImage sheet(760, 292, QImage::Format_ARGB32_Premultiplied);
         sheet.fill(QColor(11, 17, 25));
@@ -349,6 +385,7 @@ int main(int argc, char **argv)
         painter.end();
         require(sheet.save(arguments.at(2), "PNG"), "Cannot save contact sheet.");
     }
-    qInfo("Generated original PHS Radio SVG, transparent 512px preview and 9-size PNG-compressed ICO.");
+    qInfo("Generated original PHS Radio SVG, transparent 512px preview and 9-size PNG-compressed ICO.%s",
+          withPlate ? " Rounded launcher tile requested." : "");
     return 0;
 }

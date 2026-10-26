@@ -1,8 +1,11 @@
 #pragma once
 
+#include "aero_animation.h"
+
 #include <QElapsedTimer>
 #include <QImage>
 #include <QRegion>
+#include <QPainterPath>
 #include <QWidget>
 #include <array>
 
@@ -10,8 +13,8 @@ class QTimer;
 class QPainter;
 
 // Playback flourish for the dock. Two deliberately different languages:
-//   * GreenLaser (the default water dock) draws long glass ribbons that sweep
-//     one at a time, lit like Frutiger Aero glass with a spectral rim.
+//   * GreenLaser (the default water dock) draws thin, translucent water trails
+//     from DPR-aware cached light textures with a small luminous head.
 //   * Fire keeps the original fixed-beam flash, unchanged.
 class PlaybackMeteor final : public QWidget {
 public:
@@ -61,6 +64,7 @@ private:
     QWidget *m_host;
     QTimer *m_timer;
     QElapsedTimer m_clock;
+    Aero::FrameSchedule m_schedule;
     QRegion m_previousDirty;
     qreal m_progress = 0;
     bool m_running = false;
@@ -68,8 +72,11 @@ private:
     qreal m_spriteDpr = 0;
     QImage m_tailSprite;
     QImage m_headSprite;
+    QSize m_clipSize;
+    QPainterPath m_waterClip;
+    QPainterPath m_fireClip;
 
-    static constexpr int RibbonDurationMs = 1290;
+    static constexpr int RibbonDurationMs = 1480;
     static constexpr int FireDurationMs = 1120;
     static constexpr qreal TailSpan = .70;
     static const std::array<Meteor, 7> Ribbons;

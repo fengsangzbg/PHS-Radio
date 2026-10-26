@@ -16,13 +16,13 @@
 // horizontal, spanning most of the panel, launched in a loose overlap so two or
 // three are aloft at once without ever becoming an evenly spaced row.
 const std::array<PlaybackMeteor::Meteor, 7> PlaybackMeteor::Ribbons = {{
-    {{ .98,  .06}, {.20,  .92},    0, 540, 1.00, .00, 1.00, -.010},
-    {{ .90, -.04}, {.34,  .82},  110, 520,  .80, .00,  .86,  .012},
-    {{1.05,  .14}, {.44, 1.00},  220, 550,  .90, .00,  .94,  .006},
-    {{ .78, -.02}, {.10,  .86},  330, 520,  .64, .00,  .72, -.014},
-    {{ .88,  .10}, {.28,  .96},  450, 540,  .84, .00,  .88,  .008},
-    {{ .68,  .02}, {.06,  .88},  570, 520,  .70, .00,  .80, -.006},
-    {{ .82, -.06}, {.18,  .90},  690, 530,  .58, .00,  .68,  .010},
+    {{ .98,  .06}, {.20,  .92},    0, 720, 1.00, .00, 1.00, -.010},
+    {{ .90, -.04}, {.34,  .82},  110, 690,  .80, .00,  .86,  .012},
+    {{1.05,  .14}, {.44, 1.00},  220, 740,  .90, .00,  .94,  .006},
+    {{ .78, -.02}, {.10,  .86},  330, 690,  .64, .00,  .72, -.014},
+    {{ .88,  .10}, {.28,  .96},  450, 730,  .84, .00,  .88,  .008},
+    {{ .68,  .02}, {.06,  .88},  570, 700,  .70, .00,  .80, -.006},
+    {{ .82, -.06}, {.18,  .90},  690, 710,  .58, .00,  .68,  .010},
 }};
 
 // Fire dock: the original fixed-beam flash, preserved as-is.
@@ -46,9 +46,18 @@ PlaybackMeteor::PlaybackMeteor(QWidget *host)
     setAutoFillBackground(false);
     setFocusPolicy(Qt::NoFocus);
     m_timer->setTimerType(Qt::PreciseTimer);
+    m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, [this] { advance(); });
     m_host->installEventFilter(this);
     setGeometry(host->rect());
+    Aero::observeDisplayRefresh(m_host, this, [this] {
+        dropSprites();
+        if (m_running && m_clock.isValid()) {
+            m_schedule.setRefreshRate(Aero::displayRefreshRate(m_host), m_clock.nsecsElapsed());
+            m_timer->start(m_schedule.delayMs(m_clock.nsecsElapsed()));
+            update(m_previousDirty);
+        }
+    });
     hide();
 }
 
@@ -73,11 +82,14 @@ void PlaybackMeteor::trigger()
     setGeometry(m_host->rect());
     m_progress = 0;
     m_running = true;
+    ensureSprites(); // Warm the light textures before the motion clock starts.
     m_clock.restart();
+    m_schedule.setRefreshRate(Aero::displayRefreshRate(m_host), 0);
+    m_schedule.reset(0);
     m_previousDirty = frameRegion();
     show();
     raise();
-    m_timer->start(Aero::animationInterval(m_host));
+    m_timer->start(m_schedule.delayMs(m_clock.nsecsElapsed()));
     update(previous.united(m_previousDirty));
 }
 
@@ -143,10 +155,10 @@ QPointF PlaybackMeteor::pointAt(int index, qreal travel) const
     const qreal length = std::hypot(normal.x(), normal.y());
     const QPointF control = (start + end) * .5
         + (length > 0 ? normal / length : QPointF()) * (meteor.bend * length);
-    // Smoothstep on the travel distance: the ribbon swells out of the edge,
-    // glides through the middle and eases off, instead of sliding linearly.
+    // A slight acceleration keeps the meteor gliding through the exit instead
+    // of visibly stopping at both ends like a large UI easing animation.
     const qreal s = std::clamp(travel, 0.0, 1.0);
-    const qreal t = s * s * (3.0 - 2.0 * s);
+    const qreal t = s * (.88 + .12 * s);
     const qreal u = 1.0 - t;
     const QPointF position = start * (u * u) + control * (2 * u * t) + end * (t * t);
     if (travel >= 0)
@@ -204,9 +216,16 @@ QRegion PlaybackMeteor::frameRegion() const
         if (meteorOpacity(index) <= .01)
             continue;
         const qreal depth = beam(index).headScale;
-        const QRectF span(headPosition(index), tailPosition(index));
-        region |= QRegion(span.normalized().adjusted(-56 * depth, -56 * depth, 56 * depth,
-                                                     56 * depth).toAlignedRect());
+        const QPointF head = headPosition(index), tail = tailPosition(index);
+        const QPointF tangent = direction(index), normal(-tangent.y(), tangent.x());
+        const qreal padding = 22 * depth + 2;
+        QPolygon polygon;
+        for (const QPointF &point : {tail + normal * padding - tangent * 2,
+                                    head + normal * padding + tangent * padding,
+                                    head - normal * padding + tangent * padding,
+                                    tail - normal * padding - tangent * 2})
+            polygon << point.toPoint();
+        region |= QRegion(polygon, Qt::WindingFill);
     }
     return region.intersected(rect());
 }
@@ -217,10 +236,13 @@ void PlaybackMeteor::advance()
 {
     if (!m_running)
         return;
-    const int interval = Aero::animationInterval(m_host);
-    if (m_timer->interval() != interval)
-        m_timer->setInterval(interval);
-    m_progress = std::min(1.0, m_clock.elapsed() / qreal(durationMs()));
+    const qint64 now = m_clock.nsecsElapsed();
+    m_schedule.setRefreshRate(Aero::displayRefreshRate(m_host), now);
+    if (!m_schedule.advance(now)) {
+        m_timer->start(m_schedule.delayMs(now));
+        return;
+    }
+    m_progress = std::min(1.0, now / (durationMs() * 1000000.0));
     if (m_progress >= 1) {
         m_running = false;
         m_timer->stop();
@@ -233,6 +255,7 @@ void PlaybackMeteor::advance()
     m_previousDirty = current;
     if (!dirty.isEmpty())
         update(dirty);
+    m_timer->start(m_schedule.delayMs(m_clock.nsecsElapsed()));
 }
 
 bool PlaybackMeteor::eventFilter(QObject *watched, QEvent *event)
@@ -261,124 +284,84 @@ void PlaybackMeteor::paintEvent(QPaintEvent *)
         return;
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    QPainterPath clip;
-    if (m_style == Style::Fire) {
-        // Same silhouette and radius the original fire flash was clipped to.
-        clip.addRoundedRect(QRectF(rect()).adjusted(2, 2, -2, -2), 24, 24);
-    } else {
-        clip.addRoundedRect(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5), 26, 26);
-    }
-    painter.setClipPath(clip, Qt::IntersectClip);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    ensureSprites();
+    painter.setClipPath(m_style == Style::Fire ? m_fireClip : m_waterClip, Qt::IntersectClip);
     if (m_style == Style::Fire)
         paintLegacyFire(painter);
     else
         paintRibbons(painter);
 }
 
+void PlaybackMeteor::dropSprites()
+{
+    m_spriteDpr = 0;
+    m_tailSprite = {};
+    m_headSprite = {};
+}
+
+void PlaybackMeteor::ensureSprites()
+{
+    if (m_clipSize != size()) {
+        m_clipSize = size();
+        m_waterClip = {}; m_fireClip = {};
+        m_waterClip.addRoundedRect(QRectF(rect()).adjusted(1.5,1.5,-1.5,-1.5),26,26);
+        m_fireClip.addRoundedRect(QRectF(rect()).adjusted(2,2,-2,-2),24,24);
+    }
+    const qreal dpr = devicePixelRatioF();
+    if (m_style == Style::Fire || (qFuzzyCompare(dpr,m_spriteDpr) && !m_tailSprite.isNull()))
+        return;
+    m_spriteDpr = dpr;
+    constexpr qreal width = 1024, height = 32;
+    m_tailSprite = QImage(QSize(qCeil(width*dpr),qCeil(height*dpr)),QImage::Format_ARGB32_Premultiplied);
+    m_tailSprite.setDevicePixelRatio(dpr);m_tailSprite.fill(Qt::transparent);
+    {
+        QPainter light(&m_tailSprite);light.setRenderHint(QPainter::Antialiasing);
+        light.translate(0,height/2);
+        QLinearGradient mist(0,0,width,0);
+        mist.setColorAt(0,QColor(46,145,220,0));mist.setColorAt(.28,QColor(75,201,237,8));
+        mist.setColorAt(.72,QColor(105,227,245,40));mist.setColorAt(.96,QColor(170,245,255,90));
+        mist.setColorAt(1,QColor(220,253,255,130));
+        QPainterPath axis;axis.moveTo(0,0);axis.cubicTo(width*.35,-.2,width*.75,-.6,width,0);
+        light.setPen(QPen(QBrush(mist),10,Qt::SolidLine,Qt::RoundCap));light.drawPath(axis);
+        light.setPen(QPen(QBrush(mist),4,Qt::SolidLine,Qt::RoundCap));light.drawPath(axis);
+        QPainterPath film;film.moveTo(0,0);film.cubicTo(width*.28,-.12,width*.8,-1.2,width*.96,-1.7);
+        film.quadTo(width,-.7,width,0);film.quadTo(width,.7,width*.96,1.2);
+        film.cubicTo(width*.8,.55,width*.28,.08,0,0);film.closeSubpath();
+        QLinearGradient water(0,0,width,0);water.setColorAt(0,QColor(25,110,210,0));
+        water.setColorAt(.24,QColor(45,169,220,10));water.setColorAt(.70,QColor(113,227,246,80));
+        water.setColorAt(.94,QColor(199,249,255,160));water.setColorAt(1,QColor(246,255,255,230));
+        light.setPen(Qt::NoPen);light.setBrush(water);light.drawPath(film);
+        QLinearGradient core(0,0,width,0);core.setColorAt(0,QColor(174,246,255,0));
+        core.setColorAt(.45,QColor(167,241,254,15));core.setColorAt(.88,QColor(231,253,255,140));
+        core.setColorAt(1,QColor(255,255,255,245));light.setBrush(Qt::NoBrush);
+        light.setPen(QPen(QBrush(core),.7,Qt::SolidLine,Qt::RoundCap));light.drawPath(axis);
+    }
+    constexpr qreal diameter=40;
+    m_headSprite=QImage(QSize(qCeil(diameter*dpr),qCeil(diameter*dpr)),QImage::Format_ARGB32_Premultiplied);
+    m_headSprite.setDevicePixelRatio(dpr);m_headSprite.fill(Qt::transparent);
+    {
+        QPainter light(&m_headSprite);light.setRenderHint(QPainter::Antialiasing);
+        QRadialGradient glow(QPointF(20,20),18);glow.setColorAt(0,QColor(228,252,255,190));
+        glow.setColorAt(.12,QColor(141,233,255,100));glow.setColorAt(.30,QColor(89,207,250,24));
+        glow.setColorAt(.68,QColor(67,175,240,5));glow.setColorAt(1,QColor(38,140,230,0));
+        light.setPen(Qt::NoPen);light.setBrush(glow);light.drawEllipse(QPointF(20,20),18,18);
+        light.setBrush(QColor(246,255,255,235));light.drawEllipse(QPointF(20,20),1.15,.9);
+    }
+}
+
 void PlaybackMeteor::paintRibbons(QPainter &painter)
 {
-    // Vector, not a scaled sprite: every edge stays sharp at any length and any
-    // device pixel ratio, which is exactly what "clear" needs.
-    for (int index = beamCount() - 1; index >= 0; --index) {
-        const qreal opacity = meteorOpacity(index);
-        if (opacity <= .004)
-            continue;
-        const qreal depth = beam(index).headScale;
-        const QPointF head = headPosition(index);
-        const QPointF tail = tailPosition(index);
-        const QPointF delta = head - tail;
-        const qreal length = std::hypot(delta.x(), delta.y());
-        if (length < 2.0)
-            continue;
-        const qreal thickness = 11.0 * depth;
-
-        painter.save();
-        painter.translate(tail);
-        painter.rotate(qRadiansToDegrees(std::atan2(delta.y(), delta.x())));
-        painter.setOpacity(opacity);
-
-        // Local space: x runs 0..length, the body bows around y = 0.
-        auto halfAt = [&](qreal t) {
-            const qreal shape = std::pow(std::max(0.0, t), .50)
-                * std::pow(std::max(0.0, 1.0 - t), .30);
-            return .6 + (thickness * .5) * (shape / .58);
-        };
-        auto centerY = [&](qreal t) { return -std::sin(t * M_PI) * thickness * .30; };
-
-        constexpr int samples = 64;
-        QPainterPath lens, core;
-        for (int step = 0; step <= samples; ++step) {
-            const qreal t = step / qreal(samples);
-            const QPointF point(t * length, centerY(t) - halfAt(t));
-            if (step == 0)
-                lens.moveTo(point);
-            else
-                lens.lineTo(point);
-        }
-        for (int step = samples; step >= 0; --step) {
-            const qreal t = step / qreal(samples);
-            lens.lineTo(QPointF(t * length, centerY(t) + halfAt(t)));
-        }
-        lens.closeSubpath();
-
-        for (int step = 0; step <= samples; ++step) {
-            const qreal t = step / qreal(samples);
-            const QPointF point(t * length, centerY(t) - halfAt(t) * .30);
-            if (step == 0)
-                core.moveTo(point);
-            else
-                core.lineTo(point);
-        }
-        for (int step = samples; step >= 0; --step) {
-            const qreal t = step / qreal(samples);
-            core.lineTo(QPointF(t * length, centerY(t) + halfAt(t) * .30));
-        }
-        core.closeSubpath();
-
-        QLinearGradient body(0, -thickness * .5, 0, thickness * .5);
-        body.setColorAt(0.00, QColor(104, 208, 240, 0));
-        body.setColorAt(0.24, QColor(126, 219, 246, 120));
-        body.setColorAt(0.44, QColor(206, 246, 255, 215));
-        body.setColorAt(0.50, QColor(255, 255, 255, 250));
-        body.setColorAt(0.56, QColor(206, 246, 255, 215));
-        body.setColorAt(0.76, QColor(126, 219, 246, 120));
-        body.setColorAt(1.00, QColor(104, 208, 240, 0));
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(body);
-        painter.drawPath(lens);
-
-        QLinearGradient filament(0, -thickness * .16, 0, thickness * .16);
-        filament.setColorAt(0.0, QColor(255, 255, 255, 90));
-        filament.setColorAt(0.5, QColor(255, 255, 255, 255));
-        filament.setColorAt(1.0, QColor(255, 255, 255, 90));
-        painter.setBrush(filament);
-        painter.drawPath(core);
-
-        // Spectral fringe on both rims; only the near streaks carry it, which
-        // keeps the far ones from turning into coloured noise.
-        if (depth > .74) {
-            for (int side = -1; side <= 1; side += 2) {
-                for (int band = 0; band < 3; ++band) {
-                    const int hues[3] = {268, 200, 318};
-                    QColor tint = QColor::fromHsv(hues[band], 175, 255);
-                    tint.setAlphaF(.26 - band * .05);
-                    QPainterPath fringe;
-                    for (int step = 0; step <= samples; ++step) {
-                        const qreal t = .04 + .92 * (step / qreal(samples));
-                        const QPointF point(
-                            t * length,
-                            centerY(t) + side * halfAt(t) * (.80 + band * .06));
-                        if (step == 0)
-                            fringe.moveTo(point);
-                        else
-                            fringe.lineTo(point);
-                    }
-                    painter.setBrush(Qt::NoBrush);
-                    painter.setPen(QPen(tint, 1.1, Qt::SolidLine, Qt::RoundCap));
-                    painter.drawPath(fringe);
-                }
-            }
-        }
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    for (int index=beamCount()-1;index>=0;--index) {
+        const qreal opacity=meteorOpacity(index);if(opacity<=.004)continue;
+        const QPointF head=headPosition(index),tail=tailPosition(index),delta=head-tail;
+        const qreal length=std::hypot(delta.x(),delta.y());if(length<2)continue;
+        const qreal depth=beam(index).headScale;
+        painter.save();painter.translate(tail);
+        painter.rotate(qRadiansToDegrees(std::atan2(delta.y(),delta.x())));painter.setOpacity(opacity);
+        painter.drawImage(QRectF(0,-16*depth,length,32*depth),m_tailSprite);
+        painter.drawImage(QRectF(length-20*depth,-20*depth,40*depth,40*depth),m_headSprite);
         painter.restore();
     }
 }

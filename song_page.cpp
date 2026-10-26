@@ -188,8 +188,20 @@ protected:
 private:
     QRectF recordBounds() const
     {
-        const qreal diameter = std::max<qreal>(0, std::min({width() - 20, height() - 20, 520}));
-        return QRectF((width() - diameter) / 2.0, (height() - diameter) / 2.0, diameter, diameter);
+        // Keep the disc a true circle. If the card is taller than the visible
+        // window it used to be centred in the clipped card and the lower arc
+        // disappeared, which read as an ellipse; fit it to the visible part.
+        qreal visible = height();
+        if (QWidget *top = window()) {
+            const QPoint origin = mapTo(top, QPoint(0, 0));
+            visible = std::min<qreal>(height(), std::max<qreal>(0, top->height() - origin.y()));
+        }
+        const qreal diameter = std::max<qreal>(0, std::min({static_cast<qreal>(width() - 20),
+                                                            static_cast<qreal>(height() - 20),
+                                                            visible - 20, 520.0}));
+        qreal y = (height() - diameter) / 2.0;
+        if (y + diameter > visible - 6) y = std::max<qreal>(6, visible - diameter - 6);
+        return QRectF((width() - diameter) / 2.0, y, diameter, diameter);
     }
     void advance()
     {
